@@ -46,10 +46,10 @@ export const api = {
       body: JSON.stringify({ recovery, password }),
     }),
 
-  pull: (cfg: Config, cursor: number) =>
+  pull: (cfg: Config, cursor: number, limit = 1000) =>
     req<{ ops: Op[]; cursor: number; serverSeq: number }>(
       cfg,
-      `/v1/pull?cursor=${cursor}&limit=1000`,
+      `/v1/pull?cursor=${cursor}&limit=${limit}`,
     ),
 
   push: (cfg: Config, ops: Op[]) =>

@@ -1,0 +1,5 @@
+# Cloudflare Pages: always let browsers pick up a new service worker / manifest.
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache

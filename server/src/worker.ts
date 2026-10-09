@@ -166,10 +166,18 @@ export async function handle(req: Request, store: Store): Promise<Response> {
   return json({ error: "not found" }, 404);
 }
 
+// The schema check is idempotent but costs D1 round-trips, so run it once per
+// worker instance rather than on every request. A failed attempt is retried.
+let schemaReady: Promise<void> | null = null;
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const store = new D1Store(env.DB);
-    await store.init();
+    schemaReady ??= store.init().catch((e) => {
+      schemaReady = null;
+      throw e;
+    });
+    await schemaReady;
     return handle(req, store);
   },
 };

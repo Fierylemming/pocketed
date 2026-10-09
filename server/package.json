@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "wrangler dev",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "deploy": "wrangler deploy"

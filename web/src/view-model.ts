@@ -6,6 +6,35 @@ export function rowsFor(manager: SyncManager): Note[] {
   return sortNotes(Object.values(manager.state.notes).filter((n) => !n.deleted));
 }
 
+export interface Sections {
+  /** Reminders whose time has passed, oldest first. */
+  due: Note[];
+  /** Reminders still ahead, soonest first. */
+  upcoming: Note[];
+  /** Everything without a reminder, newest first. */
+  notes: Note[];
+}
+
+export function sectionsFor(notes: Note[], now: number): Sections {
+  const live = notes.filter((n) => !n.deleted);
+  const at = (n: Note) => n.reminderAt as number;
+  const due = live
+    .filter((n) => n.reminderAt != null && at(n) <= now)
+    .sort((a, b) => at(a) - at(b));
+  const upcoming = live
+    .filter((n) => n.reminderAt != null && at(n) > now)
+    .sort((a, b) => at(a) - at(b));
+  const notesOnly = sortNotes(live.filter((n) => n.reminderAt == null));
+  return { due, upcoming, notes: notesOnly };
+}
+
+/** Case-insensitive match against every line of the note. Blank query matches all. */
+export function matchesQuery(note: Note, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return note.text.toLowerCase().includes(q);
+}
+
 export function syncStatus(
   phase: Phase,
   lastSync: number | null,
@@ -33,28 +62,4 @@ export function syncStatus(
 export function reminderMeta(note: Note, now: number): string | null {
   if (note.reminderAt == null) return null;
   return "⏰ " + formatReminderLabel(note.reminderAt, now);
-}
-
-export const REMINDER_CHOICES = [
-  { id: "none", label: "No reminder" },
-  { id: "1h", label: "In 1 hour" },
-  { id: "tonight", label: "Today 21:00" },
-  { id: "tomorrow", label: "Tomorrow 9:00" },
-] as const;
-
-export function reminderAtFor(choice: string, now: number): number | null {
-  if (choice === "1h") return round(now + 3_600_000);
-  if (choice === "tonight") return atLocal(now, 21, 0);
-  if (choice === "tomorrow") return atLocal(now + 86_400_000, 9, 0);
-  return null;
-}
-
-function round(ms: number): number {
-  return Math.round(ms / 60_000) * 60_000;
-}
-
-function atLocal(ms: number, h: number, m: number): number {
-  const d = new Date(ms);
-  d.setHours(h, m, 0, 0);
-  return d.getTime();
 }
