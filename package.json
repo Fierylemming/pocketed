@@ -1,0 +1,13 @@
+{
+  "name": "pocketed",
+  "version": "2.0.0",
+  "private": true,
+  "workspaces": ["packages/*", "server", "web", "apps/*"],
+  "scripts": {
+    "test": "npm test -w @pocketed/shared -w @pocketed/server -w @pocketed/web",
+    "typecheck": "npm run typecheck -w @pocketed/shared -w @pocketed/server -w @pocketed/web",
+    "build:web": "npm run build -w @pocketed/web",
+    "deploy:server": "npm run deploy -w @pocketed/server",
+    "deploy:web": "npm run deploy -w @pocketed/web"
+  }
+}

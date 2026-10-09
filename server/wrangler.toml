@@ -1,0 +1,11 @@
+# Pocketed sync server v2 — Cloudflare Workers + D1.
+name = "pocketed"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+
+# Create with:  npx wrangler d1 create pocketed-v2
+# then paste the printed database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "pocketed-v2"
+database_id = "27088b1c-430b-4502-89de-afbc70a04ffc"
