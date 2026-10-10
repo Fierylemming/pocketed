@@ -4,7 +4,11 @@
 // `npm run dev` talks to a local API started with `npm run dev:server`.
 export const DEFAULT_SERVER_URL: string =
   (import.meta.env.VITE_SERVER_URL as string | undefined) ??
-  (import.meta.env.DEV ? "http://localhost:8787" : "");
+  (import.meta.env.DEV
+    ? typeof window !== "undefined"
+      ? window.location.origin
+      : "http://localhost:8787"
+    : "");
 
 export interface Config {
   serverUrl: string;

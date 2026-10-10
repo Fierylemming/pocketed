@@ -17,7 +17,7 @@ function loadState(): SyncState {
     if (!raw) return emptyState();
     const s = JSON.parse(raw) as SyncState;
     if (s && typeof s === "object" && s.notes && Array.isArray(s.outbox)) {
-      return s;
+      return { ...emptyState(), ...s, sections: s.sections ?? {} };
     }
     return emptyState();
   } catch {

@@ -160,7 +160,11 @@ export async function handle(req: Request, store: Store): Promise<Response> {
   }
 
   if (url.pathname === "/v1/snapshot" && req.method === "GET") {
-    return json({ notes: await store.allNotes(), serverSeq: await store.serverSeq() });
+    return json({
+      notes: await store.allNotes(),
+      sections: await store.allSections(),
+      serverSeq: await store.serverSeq(),
+    });
   }
 
   return json({ error: "not found" }, 404);

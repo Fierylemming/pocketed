@@ -5,7 +5,7 @@
 // while the app is fully closed are still shown the next time it opens, in
 // the "Due" section. True closed-app push needs a Web Push server (see README).
 
-import { remindersDueBetween, type Note } from "@pocketed/shared";
+import { itemTitle, remindersDueBetween, type Note } from "@pocketed/shared";
 
 export type AlertState = "unsupported" | "default" | "granted" | "denied";
 
@@ -80,8 +80,9 @@ export class ReminderWatcher {
     if (!last || last > now) return; // first run, or the clock went backwards
     if (alertState() !== "granted") return;
     for (const n of remindersDueBetween(this.notes(), last, now)) {
-      const title = n.text.split("\n")[0].trim() || "Reminder";
-      void showAlert("⏰ Reminder", title, `${n.id}:${n.reminderAt}`);
+      const title = itemTitle(n) || "Reminder";
+      const body = n.location ? `${title} · 📍 ${n.location}` : title;
+      void showAlert("⏰ Reminder", body, `${n.id}:${n.reminderAt}`);
     }
   }
 }

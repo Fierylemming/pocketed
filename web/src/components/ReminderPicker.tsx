@@ -20,12 +20,19 @@ const NONE_ID = "none";
 export function ReminderPicker({
   initial,
   onChange,
+  allowNone = true,
 }: {
   initial: number | null;
   onChange: (v: ReminderValue) => void;
+  allowNone?: boolean;
 }) {
-  const [choice, setChoice] = useState<string>(initial == null ? NONE_ID : CUSTOM);
-  const [custom, setCustom] = useState(initial == null ? "" : toLocalInput(initial));
+  const [choice, setChoice] = useState<string>(() => {
+    if (initial != null) return CUSTOM;
+    return allowNone ? NONE_ID : "1h";
+  });
+  const [custom, setCustom] = useState(
+    initial == null ? "" : toLocalInput(initial),
+  );
 
   function pick(id: string) {
     setChoice(id);
@@ -47,8 +54,12 @@ export function ReminderPicker({
 
   return (
     <div className="reminder-picker">
-      <select value={choice} onChange={(e) => pick(e.target.value)} aria-label="Reminder">
-        <option value={NONE_ID}>No reminder</option>
+      <select
+        value={choice}
+        onChange={(e) => pick(e.target.value)}
+        aria-label="Reminder"
+      >
+        {allowNone && <option value={NONE_ID}>No reminder</option>}
         {quickReminders(Date.now()).map((q) => (
           <option key={q.id} value={q.id}>
             {q.label}

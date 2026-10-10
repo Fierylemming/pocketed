@@ -1,7 +1,12 @@
-// Reminder scheduling helpers shared by the phone app (notifications)
-// and both UIs (labels).
+// Reminder scheduling + calendar helpers shared by the phone app (notifications)
+// and both UIs (labels, monthly calendar, colour filtering).
 
-import type { Note } from "./protocol";
+import {
+  DEFAULT_REMINDER_COLOR,
+  itemTitle,
+  type Note,
+  type ReminderColorId,
+} from "./protocol";
 
 /** Stable Android-safe notification id for a (note, time) pair. */
 export function notificationIdFor(noteId: string, reminderAt: number): number {
@@ -74,7 +79,7 @@ export function reminderDiff(
     id: notificationIdFor(n.id, n.reminderAt as number),
     noteId: n.id,
     at: n.reminderAt as number,
-    title: n.text.split("\n")[0] || "Reminder",
+    title: itemTitle(n) || "Reminder",
   }));
   const wantedIds = new Set(wanted.map((w) => w.id));
   return {
@@ -132,4 +137,87 @@ export function fromLocalInput(value: string): number | null {
   if (d.getFullYear() !== y || d.getMonth() !== mo - 1 || d.getDate() !== da) return null;
   if (d.getHours() !== h || d.getMinutes() !== mi) return null;
   return d.getTime();
+}
+
+/** Returns "YYYY-MM-DD" in local time for grouping reminders by calendar day. */
+export function localDateKey(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+export function effectiveReminderColor(note: Note): ReminderColorId {
+  return note.color ?? DEFAULT_REMINDER_COLOR;
+}
+
+/** Filters active reminders (items with a scheduled reminderAt) by colour. */
+export function filterRemindersByColor(
+  notes: Note[],
+  colorFilter: ReminderColorId | "all",
+): Note[] {
+  return notes
+    .filter(
+      (n) =>
+        !n.deleted &&
+        typeof n.reminderAt === "number" &&
+        n.reminderAt !== null &&
+        (colorFilter === "all" || effectiveReminderColor(n) === colorFilter),
+    )
+    .sort((a, b) => (a.reminderAt as number) - (b.reminderAt as number));
+}
+
+export interface CalendarDay {
+  dateKey: string;
+  year: number;
+  month: number;
+  day: number;
+  isCurrentMonth: boolean;
+  isToday: boolean;
+  reminders: Note[];
+}
+
+/**
+ * Builds a 42-cell (6-week, Sun-Sat) calendar grid for the given year & month (0-indexed),
+ * populated with active reminders (optionally filtered by colour).
+ */
+export function buildCalendarMonth(
+  year: number,
+  month: number,
+  notes: Note[],
+  now: number,
+  colorFilter: ReminderColorId | "all" = "all",
+): CalendarDay[] {
+  const filtered = filterRemindersByColor(notes, colorFilter);
+  const byDay = new Map<string, Note[]>();
+  for (const r of filtered) {
+    const key = localDateKey(r.reminderAt as number);
+    const list = byDay.get(key) ?? [];
+    list.push(r);
+    byDay.set(key, list);
+  }
+
+  const todayKey = localDateKey(now);
+  const firstOfMonth = new Date(year, month, 1);
+  const startOffset = firstOfMonth.getDay(); // 0 (Sun) .. 6 (Sat)
+  const gridStart = new Date(year, month, 1 - startOffset);
+
+  const days: CalendarDay[] = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(
+      gridStart.getFullYear(),
+      gridStart.getMonth(),
+      gridStart.getDate() + i,
+    );
+    const dateKey = localDateKey(d.getTime());
+    days.push({
+      dateKey,
+      year: d.getFullYear(),
+      month: d.getMonth(),
+      day: d.getDate(),
+      isCurrentMonth: d.getMonth() === month && d.getFullYear() === year,
+      isToday: dateKey === todayKey,
+      reminders: byDay.get(dateKey) ?? [],
+    });
+  }
+  return days;
 }

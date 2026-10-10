@@ -2,7 +2,14 @@
 //  - D1Store:     production, backed by Cloudflare D1
 //  - MemoryStore: tests
 
-import type { Note, Op } from "@pocketed/shared";
+import type {
+  ChecklistItem,
+  ItemKind,
+  Note,
+  Op,
+  ReminderColorId,
+  Section,
+} from "@pocketed/shared";
 
 export interface AuthRow {
   salt: string;
@@ -10,14 +17,53 @@ export interface AuthRow {
   recoveryHash: string;
 }
 
+interface StoredMeta {
+  itemKind?: ItemKind;
+  title?: string;
+  body?: string;
+  sectionId?: string | null;
+  location?: string | null;
+  color?: ReminderColorId | null;
+  images?: string[];
+  checklist?: ChecklistItem[];
+  pinned?: boolean;
+  sectionName?: string;
+}
+
+function encodeMeta(op: Op): string | null {
+  const m: StoredMeta = {};
+  if (op.itemKind !== undefined) m.itemKind = op.itemKind;
+  if (op.title !== undefined) m.title = op.title;
+  if (op.body !== undefined) m.body = op.body;
+  if (op.sectionId !== undefined) m.sectionId = op.sectionId;
+  if (op.location !== undefined) m.location = op.location;
+  if (op.color !== undefined) m.color = op.color;
+  if (op.images !== undefined) m.images = op.images;
+  if (op.checklist !== undefined) m.checklist = op.checklist;
+  if (op.pinned !== undefined) m.pinned = op.pinned;
+  if (op.sectionName !== undefined) m.sectionName = op.sectionName;
+  return Object.keys(m).length > 0 ? JSON.stringify(m) : null;
+}
+
+function decodeMeta(raw: unknown): StoredMeta {
+  if (typeof raw !== "string" || !raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as StoredMeta) : {};
+  } catch {
+    return {};
+  }
+}
+
 export interface Store {
   init(): Promise<void>;
   noteCount(): Promise<number>;
   serverSeq(): Promise<number>;
-  /** Idempotent by op.id; applies the op to the note table (LWW). */
+  /** Idempotent by op.id; applies the op to the note/section table (LWW). */
   appendOp(op: Op): Promise<void>;
   listOps(cursor: number, limit: number): Promise<{ ops: Op[]; cursor: number }>;
   allNotes(): Promise<Note[]>;
+  allSections(): Promise<Section[]>;
   getAuth(): Promise<AuthRow | null>;
   setAuth(row: AuthRow): Promise<void>;
 }
@@ -31,7 +77,8 @@ CREATE TABLE IF NOT EXISTS op (
   text TEXT,
   reminderAt INTEGER,
   createdAt INTEGER,
-  updatedAt INTEGER NOT NULL
+  updatedAt INTEGER NOT NULL,
+  meta TEXT
 );
 CREATE TABLE IF NOT EXISTS note (
   id TEXT PRIMARY KEY,
@@ -39,6 +86,14 @@ CREATE TABLE IF NOT EXISTS note (
   createdAt INTEGER NOT NULL,
   updatedAt INTEGER NOT NULL,
   reminderAt INTEGER,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  meta TEXT
+);
+CREATE TABLE IF NOT EXISTS section (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL,
   deleted INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS auth (
@@ -55,6 +110,17 @@ export class D1Store implements Store {
   async init(): Promise<void> {
     for (const stmt of SCHEMA.split(";\n").filter((s) => s.trim())) {
       await this.db.prepare(stmt).run();
+    }
+    // Safe migrations for existing v2.0 databases created before `meta` existed
+    for (const alter of [
+      "ALTER TABLE op ADD COLUMN meta TEXT",
+      "ALTER TABLE note ADD COLUMN meta TEXT",
+    ]) {
+      try {
+        await this.db.prepare(alter).run();
+      } catch {
+        /* Column already exists */
+      }
     }
   }
 
@@ -73,10 +139,11 @@ export class D1Store implements Store {
   }
 
   async appendOp(op: Op): Promise<void> {
+    const metaJson = encodeMeta(op);
     const res = await this.db
       .prepare(
-        `INSERT OR IGNORE INTO op (id, kind, noteId, text, reminderAt, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO op (id, kind, noteId, text, reminderAt, createdAt, updatedAt, meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         op.id,
@@ -86,15 +153,52 @@ export class D1Store implements Store {
         op.reminderAt ?? null,
         op.createdAt ?? op.updatedAt,
         op.updatedAt,
+        metaJson,
       )
       .run();
     if ((res.meta.changes ?? 0) === 0) return; // duplicate op id
 
+    if (op.kind === "section-delete") {
+      await this.db
+        .prepare(
+          `INSERT INTO section (id, name, createdAt, updatedAt, deleted)
+           VALUES (?, '', ?, ?, 1)
+           ON CONFLICT(id) DO UPDATE SET
+             deleted = 1,
+             updatedAt = excluded.updatedAt
+           WHERE excluded.updatedAt >= section.updatedAt`,
+        )
+        .bind(op.noteId, op.updatedAt, op.updatedAt)
+        .run();
+      return;
+    }
+
+    if (op.kind === "section-upsert") {
+      await this.db
+        .prepare(
+          `INSERT INTO section (id, name, createdAt, updatedAt, deleted)
+           VALUES (?, ?, ?, ?, 0)
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             deleted = 0,
+             updatedAt = excluded.updatedAt
+           WHERE excluded.updatedAt >= section.updatedAt`,
+        )
+        .bind(
+          op.noteId,
+          op.sectionName ?? "Untitled",
+          op.createdAt ?? op.updatedAt,
+          op.updatedAt,
+        )
+        .run();
+      return;
+    }
+
     if (op.kind === "delete") {
       await this.db
         .prepare(
-          `INSERT INTO note (id, text, createdAt, updatedAt, reminderAt, deleted)
-           VALUES (?, '', ?, ?, NULL, 1)
+          `INSERT INTO note (id, text, createdAt, updatedAt, reminderAt, deleted, meta)
+           VALUES (?, '', ?, ?, NULL, 1, NULL)
            ON CONFLICT(id) DO UPDATE SET
              deleted = 1, reminderAt = NULL,
              updatedAt = excluded.updatedAt
@@ -105,11 +209,12 @@ export class D1Store implements Store {
     } else {
       await this.db
         .prepare(
-          `INSERT INTO note (id, text, createdAt, updatedAt, reminderAt, deleted)
-           VALUES (?, ?, ?, ?, ?, 0)
+          `INSERT INTO note (id, text, createdAt, updatedAt, reminderAt, deleted, meta)
+           VALUES (?, ?, ?, ?, ?, 0, ?)
            ON CONFLICT(id) DO UPDATE SET
              text = excluded.text,
              reminderAt = excluded.reminderAt,
+             meta = excluded.meta,
              deleted = 0,
              updatedAt = excluded.updatedAt
            WHERE excluded.updatedAt >= note.updatedAt`,
@@ -120,6 +225,7 @@ export class D1Store implements Store {
           op.createdAt ?? op.updatedAt,
           op.updatedAt,
           op.reminderAt ?? null,
+          metaJson,
         )
         .run();
     }
@@ -128,20 +234,24 @@ export class D1Store implements Store {
   async listOps(cursor: number, limit: number) {
     const rows = await this.db
       .prepare(
-        `SELECT seq, id, kind, noteId, text, reminderAt, createdAt, updatedAt
+        `SELECT seq, id, kind, noteId, text, reminderAt, createdAt, updatedAt, meta
          FROM op WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2`,
       )
       .bind(cursor, limit)
       .all();
-    const ops: Op[] = rows.results.map((r) => ({
-      id: r.id as string,
-      kind: r.kind as Op["kind"],
-      noteId: r.noteId as string,
-      text: (r.text as string) ?? undefined,
-      reminderAt: (r.reminderAt as number) ?? null,
-      createdAt: (r.createdAt as number) ?? undefined,
-      updatedAt: r.updatedAt as number,
-    }));
+    const ops: Op[] = rows.results.map((r) => {
+      const m = decodeMeta(r.meta);
+      return {
+        id: r.id as string,
+        kind: r.kind as Op["kind"],
+        noteId: r.noteId as string,
+        text: (r.text as string) ?? undefined,
+        reminderAt: (r.reminderAt as number) ?? null,
+        createdAt: (r.createdAt as number) ?? undefined,
+        updatedAt: r.updatedAt as number,
+        ...m,
+      };
+    });
     const next = ops.length ? (rows.results.at(-1)!.seq as number) : cursor;
     return { ops, cursor: next };
   }
@@ -149,15 +259,42 @@ export class D1Store implements Store {
   async allNotes(): Promise<Note[]> {
     const rows = await this.db
       .prepare(
-        `SELECT id, text, createdAt, updatedAt, reminderAt, deleted FROM note`,
+        `SELECT id, text, createdAt, updatedAt, reminderAt, deleted, meta FROM note`,
+      )
+      .all();
+    return rows.results.map((r) => {
+      const m = decodeMeta(r.meta);
+      return {
+        id: r.id as string,
+        text: r.text as string,
+        kind: m.itemKind,
+        title: m.title,
+        body: m.body,
+        sectionId: m.sectionId ?? null,
+        location: m.location ?? null,
+        color: m.color ?? null,
+        images: m.images ?? [],
+        checklist: m.checklist ?? [],
+        pinned: m.pinned ?? false,
+        createdAt: r.createdAt as number,
+        updatedAt: r.updatedAt as number,
+        reminderAt: (r.reminderAt as number) ?? null,
+        deleted: (r.deleted as number) === 1,
+      };
+    });
+  }
+
+  async allSections(): Promise<Section[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT id, name, createdAt, updatedAt, deleted FROM section`,
       )
       .all();
     return rows.results.map((r) => ({
       id: r.id as string,
-      text: r.text as string,
+      name: r.name as string,
       createdAt: r.createdAt as number,
       updatedAt: r.updatedAt as number,
-      reminderAt: (r.reminderAt as number) ?? null,
       deleted: (r.deleted as number) === 1,
     }));
   }
@@ -186,6 +323,7 @@ export class D1Store implements Store {
 export class MemoryStore implements Store {
   ops: (Op & { seq: number })[] = [];
   notes = new Map<string, Note>();
+  sections = new Map<string, Section>();
   auth: AuthRow | null = null;
   private seq = 0;
 
@@ -211,6 +349,31 @@ export class MemoryStore implements Store {
     if (this.ops.some((o) => o.id === op.id)) return;
     this.seq += 1;
     this.ops.push({ ...op, seq: this.seq });
+
+    if (op.kind === "section-delete" || op.kind === "section-upsert") {
+      const curSec = this.sections.get(op.noteId);
+      if (op.kind === "section-delete") {
+        if (!curSec || op.updatedAt >= curSec.updatedAt) {
+          this.sections.set(op.noteId, {
+            id: op.noteId,
+            name: curSec?.name ?? "",
+            createdAt: curSec?.createdAt ?? op.updatedAt,
+            updatedAt: Math.max(curSec?.updatedAt ?? 0, op.updatedAt),
+            deleted: true,
+          });
+        }
+      } else if (!curSec || op.updatedAt >= curSec.updatedAt) {
+        this.sections.set(op.noteId, {
+          id: op.noteId,
+          name: op.sectionName ?? curSec?.name ?? "Untitled",
+          createdAt: op.createdAt ?? curSec?.createdAt ?? op.updatedAt,
+          updatedAt: op.updatedAt,
+          deleted: false,
+        });
+      }
+      return;
+    }
+
     const cur = this.notes.get(op.noteId);
     if (op.kind === "delete") {
       const base =
@@ -235,7 +398,16 @@ export class MemoryStore implements Store {
       this.notes.set(op.noteId, {
         id: op.noteId,
         text: op.text ?? "",
-        createdAt: op.createdAt ?? op.updatedAt,
+        kind: op.itemKind ?? cur?.kind,
+        title: op.title ?? cur?.title,
+        body: op.body ?? cur?.body,
+        sectionId: op.sectionId !== undefined ? op.sectionId : (cur?.sectionId ?? null),
+        location: op.location !== undefined ? op.location : (cur?.location ?? null),
+        color: op.color !== undefined ? op.color : (cur?.color ?? null),
+        images: op.images ?? cur?.images ?? [],
+        checklist: op.checklist ?? cur?.checklist ?? [],
+        pinned: op.pinned ?? cur?.pinned ?? false,
+        createdAt: op.createdAt ?? cur?.createdAt ?? op.updatedAt,
         updatedAt: op.updatedAt,
         reminderAt: op.reminderAt ?? null,
         deleted: false,
@@ -253,5 +425,9 @@ export class MemoryStore implements Store {
 
   async allNotes(): Promise<Note[]> {
     return [...this.notes.values()];
+  }
+
+  async allSections(): Promise<Section[]> {
+    return [...this.sections.values()];
   }
 }
