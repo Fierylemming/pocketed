@@ -11,7 +11,22 @@ export const LIMITS = {
   maxImageDataUrlChars: 800_000,
   opsPerPush: 500,
   opsPerPull: 1000,
+  /** Longest "alert me N minutes before" lead time: one week. */
+  alertBeforeMinutes: 7 * 24 * 60,
+  sourceRefChars: 200,
 } as const;
+
+/** Where an item came from. Missing/null = made by hand in Pocketed. */
+export type ItemSource = "gcal";
+
+export function isValidSource(s: unknown): s is ItemSource {
+  return s === "gcal";
+}
+
+/** Imported calendar events alert this many minutes before they start (and again at the start). */
+export const CALENDAR_ALERT_BEFORE_MINUTES = 30;
+/** Imported calendar events use this colour. */
+export const CALENDAR_REMINDER_COLOR: ReminderColorId = "sky";
 
 export type ItemKind = "note" | "reminder";
 
@@ -156,6 +171,12 @@ export interface Note {
   reminderAt: number | null;
   /** How the reminder repeats (only meaningful when reminderAt is set). */
   repeat?: RepeatId | null;
+  /** Extra early alert, in minutes before reminderAt (the main alert still fires at reminderAt). */
+  alertBefore?: number | null;
+  /** Set when the item was imported (e.g. from Google Calendar) rather than typed in. */
+  source?: ItemSource | null;
+  /** Importer bookkeeping: which version of the source event this was made from. */
+  sourceRef?: string | null;
   deleted: boolean;
 }
 
@@ -179,6 +200,9 @@ export interface Op {
   sectionName?: string;
   reminderAt?: number | null;
   repeat?: RepeatId | null;
+  alertBefore?: number | null;
+  source?: ItemSource | null;
+  sourceRef?: string | null;
   createdAt?: number;
   /** Last-writer-wins timestamp. */
   updatedAt: number;
@@ -280,6 +304,24 @@ export function validateOp(op: Op): string | null {
     }
     if (op.repeat != null && !isValidRepeat(op.repeat)) {
       return "op.repeat invalid";
+    }
+    if (
+      op.alertBefore != null &&
+      (typeof op.alertBefore !== "number" ||
+        !Number.isInteger(op.alertBefore) ||
+        op.alertBefore <= 0 ||
+        op.alertBefore > LIMITS.alertBeforeMinutes)
+    ) {
+      return "op.alertBefore invalid";
+    }
+    if (op.source != null && !isValidSource(op.source)) {
+      return "op.source invalid";
+    }
+    if (
+      op.sourceRef != null &&
+      (typeof op.sourceRef !== "string" || op.sourceRef.length > LIMITS.sourceRefChars)
+    ) {
+      return "op.sourceRef invalid";
     }
     if (op.images !== undefined) {
       if (!Array.isArray(op.images) || op.images.length > LIMITS.maxImagesPerNote) {

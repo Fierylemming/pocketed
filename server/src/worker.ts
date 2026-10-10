@@ -9,6 +9,13 @@
 //   GET  /v1/snapshot        bearer = password
 //   POST /v1/password        bearer = old password; { password } = new
 //   POST /v1/recovery        bearer = password; { recovery } = new recovery key
+//
+// Google Calendar link (secret iCal address). The apps parse the feed and
+// turn events into reminders; the server only stores and relays the link:
+//   GET  /v1/calendar             status (never returns the secret link)
+//   POST /v1/calendar             { url } check and save / replace the link
+//   GET  /v1/calendar/feed        the calendar (.ics), streamed through
+//   POST /v1/calendar/disconnect  forget the link
 
 import {
   LIMITS,
@@ -17,6 +24,13 @@ import {
   type Op,
 } from "@pocketed/shared";
 import { hashWithSalt, newSalt } from "./auth";
+import {
+  calendarStatus,
+  CalendarInputError,
+  connectCalendar,
+  proxyFeed,
+  type Fetcher,
+} from "./calendar";
 import { D1Store, type Store } from "./store";
 
 export interface Env {
@@ -49,7 +63,15 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-export async function handle(req: Request, store: Store): Promise<Response> {
+/** Injectable for tests. */
+export interface Deps {
+  fetch?: Fetcher;
+  now?: () => number;
+}
+
+export async function handle(req: Request, store: Store, deps: Deps = {}): Promise<Response> {
+  const now = deps.now ?? Date.now;
+  const fetcher: Fetcher = deps.fetch ?? ((u, i) => fetch(u, i));
   const url = new URL(req.url);
 
   if (req.method === "OPTIONS") {
@@ -157,6 +179,31 @@ export async function handle(req: Request, store: Store): Promise<Response> {
     );
     const page = await store.listOps(cursor, limit);
     return json({ ...page, serverSeq: await store.serverSeq() });
+  }
+
+  // ---- calendar link ----
+
+  if (url.pathname.startsWith("/v1/calendar")) {
+    try {
+      if (url.pathname === "/v1/calendar" && req.method === "GET") {
+        return json(await calendarStatus(store));
+      }
+      if (url.pathname === "/v1/calendar" && req.method === "POST") {
+        const body = await readJson(req);
+        await connectCalendar(store, body?.url, now(), fetcher);
+        return json(await calendarStatus(store));
+      }
+      if (url.pathname === "/v1/calendar/feed" && req.method === "GET") {
+        return await proxyFeed(store, fetcher, CORS);
+      }
+      if (url.pathname === "/v1/calendar/disconnect" && req.method === "POST") {
+        await store.setCalendar(null);
+        return json(await calendarStatus(store));
+      }
+    } catch (e) {
+      if (e instanceof CalendarInputError) return json({ error: e.message }, e.status);
+      throw e;
+    }
   }
 
   if (url.pathname === "/v1/snapshot" && req.method === "GET") {

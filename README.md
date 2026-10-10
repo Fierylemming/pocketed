@@ -21,9 +21,10 @@ Nothing reaches your live site until a change is merged to `main`.
 ## Layout
 
 ```
-packages/shared   sync engine, reminders, auth rules (pure TypeScript, shared by everything)
-server            Cloudflare Worker + D1 store
+packages/shared   sync engine, reminders, calendar import rules, auth (pure TypeScript, shared by everything)
+server            Cloudflare Worker + D1 store (+ Google Calendar link: src/calendar.ts)
 web               the website / installable app (React + Vite -> Cloudflare Pages)
+                  calendar parsing: src/ical.ts, src/calendar-import.ts
   web/public      manifest, service worker (sw.js), app icons, Cloudflare headers
 .github/workflows ci.yml (checks on branches/PRs) and deploy.yml (publishes on main)
 ```
@@ -61,6 +62,8 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - **Two Separate Creation Buttons** — choose between **📝 New Note** and **⏰ New Reminder**:
   - **Notes** are large items with a title, large body, image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
   - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour code.
+- **Google Calendar import** — connect your calendar once and its events show up as reminders automatically
+  (see below).
 - **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded across a curated 6-colour palette (Ruby, Amber, Emerald, Sky, Violet, Rose) with one-click colour filtering.
 
 ## Reminders: what to expect
@@ -77,6 +80,37 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - Reminders that fire **while the phone is locked and the app is closed** need Web Push
   (a server-side push service). That is not built yet; see "Next steps" below.
 
+## Google Calendar: auto-filled reminders
+
+Connect once in ⚙️ Settings → **Google Calendar** and your events show up as reminders on every device.
+
+1. On a computer, open **calendar.google.com** → ⚙️ **Settings** → under **Settings for my calendars** click
+   your calendar → **Integrate calendar** → copy **Secret address in iCal format**.
+2. Paste it into Pocketed's ⚙️ Settings → **Google Calendar** → **Connect**.
+
+What happens:
+
+- Events in the **next 60 days** become reminders (colour **Sky**, labelled 📅 Google Calendar).
+- Timed events alert **30 minutes before** ("⏰ In 30 min") and again **when they start** ("📅 Starting now").
+  All-day events alert once, at 9:00 on the day.
+- Repeating events are added one occurrence at a time; skipped, moved and cancelled occurrences are respected.
+- Pocketed checks the calendar **shortly after it opens, then every 15 minutes while it's on screen** (hourly in
+  the background), or straight away with **Check now**. Changes sync to your other devices as usual.
+- An event changed in Google updates its reminder, but any colour, section or pin you set yourself stays.
+  A cancelled event's reminder is removed, and once an event has ended its reminder is cleared away.
+- ✅ or 🗑️ on an imported reminder sticks. It only comes back if the event is moved to a new time.
+- **Disconnect** removes the imported reminders and forgets the link.
+- The import is one-way: nothing is ever written back to Google.
+
+How it works: the sync server stores the link and passes the calendar file through to the app; the app
+reads it and turns events into reminders. The reading happens on your device because a calendar's full history
+can be megabytes, more than the free Cloudflare plan's 10 ms of CPU per request allows. Alerts also only fire
+while the app is running, so nothing is lost by checking from the app.
+
+The secret address lets anyone who has it read that calendar. It's stored only in your sync server's database
+and is never sent back to the apps. If it leaks, use **Reset** next to it in Google Calendar, then paste the new
+link into Pocketed (**Change link**). Only one calendar can be connected at a time.
+
 ## Security notes
 
 - Your password is the login for every device. It's stored only as a salted hash on the server.
@@ -85,6 +119,11 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - The recovery key is shown once; if you lose both password and key, your notes can't be recovered.
 
 ## Next steps (not built yet)
+
+- **"Sign in with Google" calendar connection** (Option B): uses Google's Calendar API instead of the secret
+  link (small, already-expanded event lists, so the server could check on a timer), and could later write back
+  to Google. The import rules already work from a plain list of events (`reconcileCalendar` in
+  `packages/shared/src/calendar.ts`), so this needs a second event source plus Google OAuth setup.
 
 - **Closed-app reminders**: Web Push from the Worker, using a scheduled trigger to send alerts on time.
 - **Native Android app** (Expo, with a home-screen widget): the shared reminder helpers are ready for it.

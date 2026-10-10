@@ -1,6 +1,22 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { genRecovery, passwordError } from "@pocketed/shared";
-import { api } from "../api";
+import {
+  CALENDAR_ALERT_BEFORE_MINUTES,
+  CALENDAR_WINDOW_DAYS,
+  genRecovery,
+  passwordError,
+} from "@pocketed/shared";
+import { api, ApiError, type CalendarStatus } from "../api";
+import {
+  importCalendarNow,
+  importedCount,
+  loadCalendarState,
+  noteCalendarConnected,
+  NotConnectedError,
+  removeImported,
+  type ImportCounts,
+  type LocalCalendarState,
+} from "../calendar-import";
+import type { SyncManager } from "../store";
 import type { Config } from "../config";
 import { alertState, requestAlerts, type AlertState } from "../alerts";
 import { getTextSize, setTextSize, type TextSize } from "../scale";
@@ -14,10 +30,12 @@ import {
 
 export function Settings({
   cfg,
+  manager,
   onClose,
   onNewCfg,
 }: {
   cfg: Config;
+  manager: SyncManager;
   onClose: () => void;
   onNewCfg: (c: Config | null) => void;
 }) {
@@ -29,6 +47,8 @@ export function Settings({
         <TextSizePicker />
         <hr />
         <Alerts />
+        <hr />
+        <GoogleCalendar manager={manager} />
         <hr />
         <InstallApp />
         <hr />
@@ -121,6 +141,221 @@ function Alerts() {
       {state === "unsupported" && (
         <p className="muted small">This browser can't show notifications.</p>
       )}
+    </section>
+  );
+}
+
+function ago(ts: number, now = Date.now()): string {
+  const m = Math.max(0, Math.round((now - ts) / 60_000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  return new Date(ts).toLocaleString();
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function changes(r: ImportCounts): string {
+  const parts = [
+    r.added ? `${r.added} added` : "",
+    r.updated ? `${r.updated} updated` : "",
+    r.removed ? `${r.removed} removed` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") + "." : "No changes.";
+}
+
+function GoogleCalendar({ manager }: { manager: SyncManager }) {
+  const cfg = manager.cfg;
+  const [status, setStatus] = useState<CalendarStatus | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [local, setLocal] = useState<LocalCalendarState>(() => loadCalendarState());
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState<null | "connect" | "sync" | "disconnect">(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .calendarStatus(cfg)
+      .then((s) => alive && setStatus(s))
+      .catch((e) => {
+        if (!alive) return;
+        setLoadErr(
+          e instanceof ApiError && e.status === 404
+            ? "The sync server needs updating before this works (merge to main to redeploy)."
+            : "Couldn't load the calendar settings. Are you online?",
+        );
+      });
+    return () => {
+      alive = false;
+    };
+  }, [cfg]);
+
+  const refreshLocal = () => setLocal(loadCalendarState());
+
+  async function connect(e: FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    setMsg(null);
+    setBusy("connect");
+    try {
+      setStatus(await api.connectCalendar(cfg, url.trim()));
+      noteCalendarConnected();
+      setUrl("");
+      setReplacing(false);
+      try {
+        const r = await importCalendarNow(manager);
+        setMsg(`Connected. ${plural(r.added + r.updated, "event")} imported.`);
+      } catch (e2) {
+        setErr(e2 instanceof Error ? e2.message : "Connected, but the first import failed.");
+      }
+    } catch (e2) {
+      setErr(e2 instanceof ApiError && e2.detail ? e2.detail : "Couldn't connect. Are you online?");
+    }
+    refreshLocal();
+    setBusy(null);
+  }
+
+  async function checkNow() {
+    setErr(null);
+    setMsg(null);
+    setBusy("sync");
+    try {
+      setMsg(`Checked. ${changes(await importCalendarNow(manager))}`);
+    } catch (e2) {
+      if (e2 instanceof NotConnectedError) setStatus((s) => (s ? { ...s, connected: false } : s));
+      else setErr(e2 instanceof Error ? e2.message : "Couldn't check the calendar.");
+    }
+    refreshLocal();
+    setBusy(null);
+  }
+
+  async function disconnect() {
+    if (
+      !confirm(
+        "Disconnect Google Calendar? Reminders imported from it will be removed from all devices.",
+      )
+    ) {
+      return;
+    }
+    setErr(null);
+    setMsg(null);
+    setBusy("disconnect");
+    try {
+      setStatus(await api.disconnectCalendar(cfg));
+      const removed = removeImported(manager);
+      setMsg(`Disconnected. ${plural(removed, "reminder")} removed.`);
+    } catch {
+      setErr("Couldn't disconnect. Are you online?");
+    }
+    refreshLocal();
+    setBusy(null);
+  }
+
+  const lead = CALENDAR_ALERT_BEFORE_MINUTES;
+  const days = CALENDAR_WINDOW_DAYS;
+  const imported = importedCount(manager.state);
+
+  const form = (
+    <form onSubmit={connect}>
+      <label className="field">
+        <span>Secret address in iCal format</span>
+        <input
+          type="url"
+          inputMode="url"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="https://calendar.google.com/calendar/ical/…/private-…/basic.ics"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+      </label>
+      <button
+        type="button"
+        className="linklike"
+        onClick={() => setShowHelp((v) => !v)}
+        aria-expanded={showHelp}
+      >
+        {showHelp ? "Hide steps" : "Where do I find this?"}
+      </button>
+      {showHelp && (
+        <ol className="muted small calendar-steps">
+          <li>
+            Open <b>calendar.google.com</b> on a computer (the phone app doesn't show it).
+          </li>
+          <li>
+            ⚙️ <b>Settings</b> → under <b>Settings for my calendars</b>, click your calendar.
+          </li>
+          <li>
+            Scroll to <b>Integrate calendar</b> and copy <b>Secret address in iCal format</b>.
+          </li>
+          <li>Paste it here. Treat it like a password: anyone with it can read that calendar.</li>
+        </ol>
+      )}
+      <div className="row-buttons">
+        <button className="primary" disabled={!url.trim() || busy !== null}>
+          {busy === "connect" ? "Connecting…" : "Connect"}
+        </button>
+        {replacing && (
+          <button type="button" onClick={() => setReplacing(false)} disabled={busy !== null}>
+            Cancel
+          </button>
+        )}
+      </div>
+    </form>
+  );
+
+  return (
+    <section>
+      <h3>Google Calendar</h3>
+      {loadErr && <p className="err small">{loadErr}</p>}
+      {!status && !loadErr && <p className="muted small">Loading…</p>}
+
+      {status && !status.connected && (
+        <>
+          <p className="muted small">
+            Adds your events for the next {days} days as reminders, with an alert {lead} minutes
+            before and another when they start. All-day events alert at 9:00. Pocketed checks for
+            changes every 15 minutes while it's open.
+          </p>
+          {form}
+        </>
+      )}
+
+      {status?.connected && (
+        <>
+          <p className="ok small">✓ Connected{status.feed ? ` · ${status.feed}` : ""}</p>
+          <p className="muted small">
+            {plural(imported, "upcoming event")} · alerts {lead} min before and at the start ·{" "}
+            {local.lastCheck ? `checked ${ago(local.lastCheck)}` : "not checked on this device yet"}
+          </p>
+          {local.lastError && <p className="err small">Last check failed: {local.lastError}</p>}
+          {replacing ? (
+            form
+          ) : (
+            <div className="row-buttons">
+              <button onClick={checkNow} disabled={busy !== null}>
+                {busy === "sync" ? "Checking…" : "Check now"}
+              </button>
+              <button onClick={() => setReplacing(true)} disabled={busy !== null}>
+                Change link
+              </button>
+              <button className="danger" onClick={disconnect} disabled={busy !== null}>
+                {busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {err && <p className="err small">{err}</p>}
+      {msg && <p className="ok small">{msg}</p>}
     </section>
   );
 }

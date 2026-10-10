@@ -338,3 +338,52 @@ export function repeatSummary(repeat: RepeatId | null | undefined): string {
   if (!repeat || repeat === "none") return "";
   return REPEAT_OPTIONS.find((o) => o.id === repeat)?.label ?? "";
 }
+
+// ---- Early alerts ("30 min before") ----
+
+export interface EarlyAlert {
+  note: Note;
+  /** When the early alert fires (epoch ms). */
+  at: number;
+  /** Minutes before the reminder time. */
+  minutes: number;
+}
+
+/** The time a note's early alert fires, or null when it has none. */
+export function earlyAlertAt(note: Note): number | null {
+  if (typeof note.reminderAt !== "number") return null;
+  const m = note.alertBefore;
+  if (typeof m !== "number" || !(m > 0)) return null;
+  return note.reminderAt - m * 60_000;
+}
+
+/** Early alerts that fell due inside the half-open window (from, to]. */
+export function earlyAlertsDueBetween(notes: Note[], from: number, to: number): EarlyAlert[] {
+  const out: EarlyAlert[] = [];
+  for (const n of notes) {
+    if (n.deleted) continue;
+    const at = earlyAlertAt(n);
+    if (at != null && at > from && at <= to) {
+      out.push({ note: n, at, minutes: n.alertBefore as number });
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** "30 min", "1 hr", "1 hr 30 min", "2 days" — for alert labels. */
+export function formatLeadTime(minutes: number): string {
+  if (minutes % 1440 === 0) {
+    const d = minutes / 1440;
+    return d === 1 ? "1 day" : `${d} days`;
+  }
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} hr` : `${h} hr ${m} min`;
+}
+
+/** e.g. "Alerts 30 min before and at the start" (empty when there's no early alert). */
+export function alertSummary(note: Note): string {
+  if (earlyAlertAt(note) == null) return "";
+  return `Alerts ${formatLeadTime(note.alertBefore as number)} before and at the start`;
+}

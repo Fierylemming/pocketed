@@ -39,6 +39,12 @@ describe("reminderMeta", () => {
     expect(reminderMeta(n, NOW)).toMatch(/⏰/);
     expect(reminderMeta({ ...n, reminderAt: null }, NOW)).toBeNull();
   });
+
+  it("mentions an early alert (imported calendar events)", () => {
+    const n = mk("dentist", { reminderAt: NOW + 3_600_000, alertBefore: 30 });
+    expect(reminderMeta(n, NOW)).toMatch(/🔔 30 min before$/);
+    expect(reminderMeta({ ...n, alertBefore: null }, NOW)).not.toMatch(/🔔/);
+  });
 });
 
 describe("sectionsFor", () => {

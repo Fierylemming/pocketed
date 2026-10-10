@@ -76,10 +76,18 @@ npx wrangler pages deploy web/dist --project-name=pocketed-yourname --branch=mai
 
 Check the server with `https://<worker>/health`: it should report `"version":"2"`.
 
+Google Calendar import needs no extra setup: the link is pasted in the app's ⚙️ Settings and stored in D1.
+
 ## 8. Troubleshooting
 
 - **CI fails on the build step**: `WORKER_URL` isn't set. Add it under Variables.
 - **Deploy fails with an auth error**: the Cloudflare token is missing one of the permissions in step 5.
 - **Site says "Can't reach that server address"**: check `/health` on the worker; check the address under
   "advanced: custom server address" on the login screen.
+- **Google Calendar says "didn't accept that link"**: the secret address was reset in Google. Copy it again
+  and use ⚙️ Settings → Google Calendar → **Change link**. Make sure it's the *secret* address, not the public one.
+- **Google Calendar changes are slow to appear**: the app checks every 15 minutes while it's open. Tap
+  **Check now** to check straight away.
+- **Google Calendar says "The sync server needs updating"**: the website was deployed before the server.
+  Re-run **Deploy Pocketed** from the Actions tab.
 - **Notifications don't appear**: check ⚙️ Settings → Reminder alerts. The app must be running (open or in the background).

@@ -1,5 +1,6 @@
 import {
   effectiveReminderColor,
+  formatLeadTime,
   formatReminderLabel,
   isReminderItem,
   REMINDER_COLORS,
@@ -161,5 +162,9 @@ export function syncStatus(
 export function reminderMeta(note: Note, now: number): string | null {
   if (note.reminderAt == null) return null;
   const rep = repeatLabel(note.repeat);
-  return "⏰ " + formatReminderLabel(note.reminderAt, now) + (rep ? ` · 🔁 ${rep}` : "");
+  const early =
+    typeof note.alertBefore === "number" && note.alertBefore > 0
+      ? ` · 🔔 ${formatLeadTime(note.alertBefore)} before`
+      : "";
+  return "⏰ " + formatReminderLabel(note.reminderAt, now) + (rep ? ` · 🔁 ${rep}` : "") + early;
 }

@@ -35,6 +35,7 @@ import {
 import type { Config } from "../config";
 import type { SyncManager } from "../store";
 import { ReminderWatcher } from "../alerts";
+import { CalendarAutoImport } from "../calendar-import";
 import {
   canPromptInstall,
   isInstalled,
@@ -122,6 +123,13 @@ export function Notes({
     );
     w.start();
     return () => w.stop();
+  }, [manager]);
+
+  // Keep Google Calendar events imported as reminders (when a calendar is linked).
+  useEffect(() => {
+    const c = new CalendarAutoImport(manager);
+    c.start();
+    return () => c.stop();
   }, [manager]);
 
   const now = Date.now();
@@ -823,6 +831,7 @@ export function Notes({
       {settings && (
         <Settings
           cfg={manager.cfg}
+          manager={manager}
           onClose={() => setSettings(false)}
           onNewCfg={onNewCfg}
         />
@@ -1402,6 +1411,14 @@ function ReminderCard({
         {note.location && (
           <span className="location-badge" title="Location">
             📍 {note.location}
+          </span>
+        )}
+        {note.source === "gcal" && (
+          <span
+            className="location-badge source-badge"
+            title="Imported from Google Calendar. Changes there update this reminder."
+          >
+            📅 Google Calendar
           </span>
         )}
         {sectionBadge && onOpenSection && (

@@ -8,6 +8,7 @@ import {
   uid,
   type ChecklistItem,
   type ItemKind,
+  type ItemSource,
   type Note,
   type Op,
   type RepeatId,
@@ -36,6 +37,9 @@ export interface ItemExtraFields {
   checklist?: ChecklistItem[];
   pinned?: boolean;
   repeat?: RepeatId | null;
+  alertBefore?: number | null;
+  source?: ItemSource | null;
+  sourceRef?: string | null;
 }
 
 export interface CreateNoteInput {
@@ -107,6 +111,9 @@ export function addNote(
     updatedAt: now,
     reminderAt,
     repeat: reminderAt != null ? (extra?.repeat ?? "none") : null,
+    alertBefore: extra?.alertBefore ?? null,
+    source: extra?.source ?? null,
+    sourceRef: extra?.sourceRef ?? null,
     deleted: false,
   };
   const op: Op = {
@@ -125,6 +132,9 @@ export function addNote(
     pinned: note.pinned,
     reminderAt,
     repeat: note.repeat,
+    alertBefore: note.alertBefore,
+    source: note.source,
+    sourceRef: note.sourceRef,
     createdAt: now,
     updatedAt: now,
   };
@@ -198,6 +208,9 @@ export function editNote(
     images: extra?.images !== undefined ? extra.images : prev.images,
     checklist: extra?.checklist !== undefined ? extra.checklist : prev.checklist,
     pinned: extra?.pinned !== undefined ? extra.pinned : prev.pinned,
+    alertBefore: extra?.alertBefore !== undefined ? extra.alertBefore : (prev.alertBefore ?? null),
+    source: extra?.source !== undefined ? extra.source : (prev.source ?? null),
+    sourceRef: extra?.sourceRef !== undefined ? extra.sourceRef : (prev.sourceRef ?? null),
     updatedAt: now,
   };
   const op: Op = {
@@ -216,6 +229,9 @@ export function editNote(
     pinned: note.pinned,
     reminderAt: note.reminderAt,
     repeat: note.repeat,
+    alertBefore: note.alertBefore,
+    source: note.source,
+    sourceRef: note.sourceRef,
     createdAt: note.createdAt,
     updatedAt: now,
   };
@@ -252,6 +268,9 @@ export function updateItem(
     checklist: patch.checklist !== undefined ? patch.checklist : prev.checklist,
     pinned: patch.pinned !== undefined ? patch.pinned : prev.pinned,
     repeat: patch.repeat !== undefined ? patch.repeat : prev.repeat,
+    alertBefore: patch.alertBefore !== undefined ? patch.alertBefore : prev.alertBefore,
+    source: patch.source !== undefined ? patch.source : prev.source,
+    sourceRef: patch.sourceRef !== undefined ? patch.sourceRef : prev.sourceRef,
   });
 }
 
@@ -264,6 +283,49 @@ export function markReminderDone(state: SyncState, id: string, now: number): Syn
   if (!prev || prev.deleted || prev.reminderAt == null) return state;
   const next = reminderAfterDone(prev.reminderAt, prev.repeat, now);
   return updateItem(state, id, { reminderAt: next, repeat: next == null ? null : prev.repeat }, now);
+}
+
+/**
+ * Writes a whole item under a caller-chosen id: creates it, replaces it, or
+ * brings a deleted one back. Used by importers, whose ids are deterministic.
+ */
+export function putItem(
+  state: SyncState,
+  id: string,
+  fields: Omit<Note, "id" | "createdAt" | "updatedAt" | "deleted"> & { createdAt?: number },
+  now: number,
+): SyncState {
+  const note: Note = {
+    ...fields,
+    id,
+    repeat: fields.reminderAt != null ? (fields.repeat ?? "none") : null,
+    createdAt: fields.createdAt ?? now,
+    updatedAt: now,
+    deleted: false,
+  };
+  const op: Op = {
+    id: uid(),
+    kind: "upsert",
+    noteId: id,
+    text: note.text,
+    itemKind: note.kind,
+    title: note.title,
+    body: note.body,
+    sectionId: note.sectionId ?? null,
+    location: note.location ?? null,
+    color: note.color ?? null,
+    images: note.images ?? [],
+    checklist: note.checklist ?? [],
+    pinned: note.pinned ?? false,
+    reminderAt: note.reminderAt,
+    repeat: note.repeat,
+    alertBefore: note.alertBefore ?? null,
+    source: note.source ?? null,
+    sourceRef: note.sourceRef ?? null,
+    createdAt: note.createdAt,
+    updatedAt: now,
+  };
+  return pushOp({ ...state, notes: { ...state.notes, [id]: note } }, op);
 }
 
 export function deleteNote(state: SyncState, id: string, now: number): SyncState {
@@ -425,6 +487,10 @@ export function applyRemote(state: SyncState, ops: Op[]): SyncState {
           op.reminderAt == null
             ? null
             : (op.repeat !== undefined ? op.repeat : (cur?.repeat ?? "none")),
+        alertBefore:
+          op.alertBefore !== undefined ? op.alertBefore : (cur?.alertBefore ?? null),
+        source: op.source !== undefined ? op.source : (cur?.source ?? null),
+        sourceRef: op.sourceRef !== undefined ? op.sourceRef : (cur?.sourceRef ?? null),
         deleted: false,
       };
     }
