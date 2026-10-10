@@ -47,6 +47,14 @@ In development the site already points at the local API, so you only type a pass
 
 On iPhone: Safari → Share → **Add to Home Screen**.
 
+## Features: Sections, Notes & Reminders Calendar
+
+- **Sections (Folders)** — create named sections on the home screen and click any section title to open its dedicated folder view.
+- **Two Separate Creation Buttons** — choose between **📝 New Note** and **⏰ New Reminder**:
+  - **Notes** are large items with a title, large body, image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
+  - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour code.
+- **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded across a curated 6-colour palette (Ruby, Amber, Emerald, Sky, Violet, Rose) with one-click colour filtering.
+
 ## Reminders: what to expect
 
 - Reminders are set from the composer or while editing a note: quick picks

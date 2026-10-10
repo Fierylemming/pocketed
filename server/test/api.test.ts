@@ -175,4 +175,60 @@ describe("sync api", () => {
     const health = await call("/health", {}, null);
     expect(((await health.json()) as { notes: number }).notes).toBe(0);
   });
+
+  it("round-trips sections, colour-coded reminders with location, and notes with images", async () => {
+    const { call } = await freshApp();
+    const secOp: Op = {
+      id: "op-sec-1",
+      kind: "section-upsert",
+      noteId: "sec-work",
+      sectionName: "Work",
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const remOp = op({
+      id: "op-rem-1",
+      noteId: "rem-1",
+      itemKind: "reminder",
+      title: "Team Sync",
+      body: "Weekly standup",
+      text: "Team Sync\nWeekly standup",
+      location: "Room 4B",
+      color: "violet",
+      sectionId: "sec-work",
+      reminderAt: 200_000,
+      updatedAt: 101,
+    });
+    const noteOp = op({
+      id: "op-note-1",
+      noteId: "note-rich-1",
+      itemKind: "note",
+      title: "Design Mockups",
+      body: "Attached whiteboard photos",
+      text: "Design Mockups\nAttached whiteboard photos",
+      sectionId: "sec-work",
+      images: ["data:image/png;base64,iVBORw0KGgo="],
+      updatedAt: 102,
+    });
+
+    const push = await call("/v1/push", {
+      method: "POST",
+      body: JSON.stringify({ ops: [secOp, remOp, noteOp] }),
+    });
+    expect(push.status).toBe(200);
+
+    const snap = await call("/v1/snapshot");
+    const body = (await snap.json()) as {
+      notes: { id: string; location?: string; color?: string; images?: string[]; sectionId?: string }[];
+      sections: { id: string; name: string }[];
+    };
+    expect(body.sections.map((s) => s.name)).toEqual(["Work"]);
+    const savedRem = body.notes.find((n) => n.id === "rem-1")!;
+    expect(savedRem.location).toBe("Room 4B");
+    expect(savedRem.color).toBe("violet");
+    expect(savedRem.sectionId).toBe("sec-work");
+
+    const savedNote = body.notes.find((n) => n.id === "note-rich-1")!;
+    expect(savedNote.images).toHaveLength(1);
+  });
 });

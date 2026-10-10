@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Note } from "@pocketed/shared";
-import { matchesQuery, reminderMeta, sectionsFor, syncStatus } from "../src/view-model";
+import {
+  itemsInSection,
+  matchesQuery,
+  reminderColorCounts,
+  reminderMeta,
+  sectionCounts,
+  sectionsFor,
+  syncStatus,
+} from "../src/view-model";
 
 const NOW = 1_700_000_000_000;
 
@@ -50,13 +58,52 @@ describe("sectionsFor", () => {
   });
 });
 
+describe("itemsInSection & sectionCounts", () => {
+  it("separates notes and reminders per section folder and counts due items", () => {
+    const list = [
+      mk("n1", { kind: "note", sectionId: "sec-1", updatedAt: NOW + 10 }),
+      mk("r1", {
+        kind: "reminder",
+        sectionId: "sec-1",
+        reminderAt: NOW - 1000,
+        color: "ruby",
+      }),
+      mk("r2", {
+        kind: "reminder",
+        sectionId: "sec-1",
+        reminderAt: NOW + 5000,
+        color: "emerald",
+      }),
+      mk("other-sec", { kind: "note", sectionId: "sec-2" }),
+    ];
+
+    const folder = itemsInSection(list, "sec-1");
+    expect(folder.notes.map((n) => n.id)).toEqual(["n1"]);
+    expect(folder.reminders.map((r) => r.id)).toEqual(["r1", "r2"]);
+
+    const counts = sectionCounts(list, "sec-1", NOW);
+    expect(counts).toEqual({ notes: 1, reminders: 2, due: 1 });
+
+    const colorCounts = reminderColorCounts(list);
+    expect(colorCounts.all).toBe(2);
+    expect(colorCounts.ruby).toBe(1);
+    expect(colorCounts.emerald).toBe(1);
+  });
+});
+
 describe("matchesQuery", () => {
-  it("is case-insensitive and ignores blank queries", () => {
-    const n = mk("x", { text: "Buy OAT milk\nand bread" });
+  it("is case-insensitive and matches text, title, body, location, and checklist", () => {
+    const n = mk("x", {
+      text: "Buy OAT milk\nand bread",
+      location: "Downtown Market",
+      checklist: [{ id: "1", text: "Check expiry date", done: false }],
+    });
     expect(matchesQuery(n, "")).toBe(true);
     expect(matchesQuery(n, "   ")).toBe(true);
     expect(matchesQuery(n, "oat")).toBe(true);
     expect(matchesQuery(n, "BREAD")).toBe(true);
+    expect(matchesQuery(n, "downtown")).toBe(true);
+    expect(matchesQuery(n, "expiry")).toBe(true);
     expect(matchesQuery(n, "eggs")).toBe(false);
   });
 });

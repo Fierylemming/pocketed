@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Note } from "../src/protocol";
 import {
+  buildCalendarMonth,
+  filterRemindersByColor,
   formatReminderLabel,
   fromLocalInput,
+  localDateKey,
   notificationIdFor,
   quickReminders,
   reminderDiff,
@@ -14,13 +17,19 @@ import {
 
 const NOW = 1_700_000_000_000;
 
-const note = (id: string, reminderAt: number | null, deleted = false): Note => ({
+const note = (
+  id: string,
+  reminderAt: number | null,
+  deleted = false,
+  over: Partial<Note> = {},
+): Note => ({
   id,
   text: id,
   createdAt: NOW,
   updatedAt: NOW,
   reminderAt,
   deleted,
+  ...over,
 });
 
 describe("reminders", () => {
@@ -35,7 +44,12 @@ describe("reminders", () => {
   });
 
   it("schedulableReminders skips deleted and past notes", () => {
-    const list = [note("a", NOW + 1000), note("b", NOW - 5 * 60_000), note("c", null), note("d", NOW + 2000, true)];
+    const list = [
+      note("a", NOW + 1000),
+      note("b", NOW - 5 * 60_000),
+      note("c", null),
+      note("d", NOW + 2000, true),
+    ];
     const got = schedulableReminders(list, NOW);
     expect(got.map((n) => n.id)).toEqual(["a"]);
   });
@@ -44,7 +58,9 @@ describe("reminders", () => {
     const d = new Date(NOW);
     d.setHours(9, 0, 0, 0);
     const today9 = d.getTime() > NOW ? d.getTime() : d.getTime() + 86_400_000;
-    expect(formatReminderLabel(today9, NOW)).toMatch(/^(Today|Tomorrow|Sun|Mon|Tue|Wed|Thu|Fri|Sat)/);
+    expect(formatReminderLabel(today9, NOW)).toMatch(
+      /^(Today|Tomorrow|Sun|Mon|Tue|Wed|Thu|Fri|Sat)/,
+    );
     expect(formatReminderLabel(NOW + 86_400_000, NOW)).toMatch(/.+/);
   });
 
@@ -98,3 +114,37 @@ describe("reminder windows and pickers", () => {
   });
 });
 
+describe("calendar & colour filtering", () => {
+  it("filters reminders by colour and populates calendar month cells", () => {
+    const oct10 = new Date(2026, 9, 10, 14, 0).getTime();
+    const oct15 = new Date(2026, 9, 15, 9, 30).getTime();
+    const list = [
+      note("r-ruby", oct10, false, { color: "ruby", title: "Doctor" }),
+      note("r-emerald", oct10, false, { color: "emerald", title: "Groceries" }),
+      note("r-sky", oct15, false, { color: "sky", title: "Flight" }),
+      note("plain-note", null, false, { kind: "note", title: "Ideas" }),
+    ];
+
+    expect(filterRemindersByColor(list, "all").map((n) => n.id)).toEqual([
+      "r-ruby",
+      "r-emerald",
+      "r-sky",
+    ]);
+    expect(filterRemindersByColor(list, "ruby").map((n) => n.id)).toEqual([
+      "r-ruby",
+    ]);
+    expect(filterRemindersByColor(list, "violet")).toEqual([]);
+
+    const gridAll = buildCalendarMonth(2026, 9, list, oct10, "all");
+    expect(gridAll).toHaveLength(42);
+    const cell10 = gridAll.find((c) => c.dateKey === localDateKey(oct10))!;
+    expect(cell10.isToday).toBe(true);
+    expect(cell10.reminders.map((r) => r.id)).toEqual(["r-ruby", "r-emerald"]);
+
+    const gridEmerald = buildCalendarMonth(2026, 9, list, oct10, "emerald");
+    const cell10Emerald = gridEmerald.find(
+      (c) => c.dateKey === localDateKey(oct10),
+    )!;
+    expect(cell10Emerald.reminders.map((r) => r.id)).toEqual(["r-emerald"]);
+  });
+});

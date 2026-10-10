@@ -1,9 +1,22 @@
-import { sortNotes, type Note } from "@pocketed/shared";
-import { formatReminderLabel } from "@pocketed/shared";
+import {
+  effectiveReminderColor,
+  formatReminderLabel,
+  isReminderItem,
+  REMINDER_COLORS,
+  sortNotes,
+  visibleSections,
+  type Note,
+  type ReminderColorId,
+  type Section,
+} from "@pocketed/shared";
 import type { Phase, SyncManager } from "./store";
 
 export function rowsFor(manager: SyncManager): Note[] {
   return sortNotes(Object.values(manager.state.notes).filter((n) => !n.deleted));
+}
+
+export function userSectionsFor(manager: SyncManager): Section[] {
+  return visibleSections(manager.state);
 }
 
 export interface Sections {
@@ -28,11 +41,96 @@ export function sectionsFor(notes: Note[], now: number): Sections {
   return { due, upcoming, notes: notesOnly };
 }
 
-/** Case-insensitive match against every line of the note. Blank query matches all. */
+export interface FolderContents {
+  reminders: Note[];
+  notes: Note[];
+}
+
+/**
+ * Splits items belonging to a specific section folder (`sectionId`, or `null` for general/unsectioned)
+ * into Reminders and Notes.
+ */
+export function itemsInSection(
+  allNotes: Note[],
+  sectionId: string | null,
+): FolderContents {
+  const inFolder = allNotes.filter(
+    (n) => !n.deleted && (n.sectionId ?? null) === sectionId,
+  );
+  const reminders = inFolder
+    .filter((n) => isReminderItem(n))
+    .sort((a, b) => {
+      if (a.reminderAt != null && b.reminderAt != null) {
+        return a.reminderAt - b.reminderAt;
+      }
+      if (a.reminderAt != null) return -1;
+      if (b.reminderAt != null) return 1;
+      return b.updatedAt - a.updatedAt;
+    });
+  const notes = sortNotes(inFolder.filter((n) => !isReminderItem(n)));
+  return { reminders, notes };
+}
+
+export interface SectionSummary {
+  notes: number;
+  reminders: number;
+  due: number;
+}
+
+export function sectionCounts(
+  allNotes: Note[],
+  sectionId: string | null,
+  now: number,
+): SectionSummary {
+  const { reminders, notes } = itemsInSection(allNotes, sectionId);
+  const due = reminders.filter(
+    (r) => r.reminderAt != null && r.reminderAt <= now,
+  ).length;
+  return {
+    notes: notes.length,
+    reminders: reminders.length,
+    due,
+  };
+}
+
+export function reminderColorCounts(
+  allNotes: Note[],
+): Record<ReminderColorId | "all", number> {
+  const counts: Record<ReminderColorId | "all", number> = {
+    all: 0,
+    ruby: 0,
+    amber: 0,
+    emerald: 0,
+    sky: 0,
+    violet: 0,
+    rose: 0,
+  };
+  for (const n of allNotes) {
+    if (n.deleted || n.reminderAt == null) continue;
+    counts.all += 1;
+    const c = effectiveReminderColor(n);
+    if (REMINDER_COLORS.some((rc) => rc.id === c)) {
+      counts[c] += 1;
+    }
+  }
+  return counts;
+}
+
+/** Case-insensitive match against title, body, text, location, and checklist items. Blank query matches all. */
 export function matchesQuery(note: Note, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return note.text.toLowerCase().includes(q);
+  if (note.text.toLowerCase().includes(q)) return true;
+  if (note.title && note.title.toLowerCase().includes(q)) return true;
+  if (note.body && note.body.toLowerCase().includes(q)) return true;
+  if (note.location && note.location.toLowerCase().includes(q)) return true;
+  if (
+    note.checklist &&
+    note.checklist.some((item) => item.text.toLowerCase().includes(q))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function syncStatus(
