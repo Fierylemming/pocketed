@@ -1,14 +1,15 @@
 // Calendar import: keeps one reminder per upcoming calendar event.
 //
 // Source-agnostic: the web app feeds it events parsed from the Google Calendar
-// secret iCal address (Option A); a future "Sign in with Google" importer
-// (Option B) only has to produce the same CalendarEvent list.
+// secret iCal address (Option A, no colours) or fetched with "Sign in with
+// Google" (Option B, see google-calendar.ts, which also supplies colours).
 //
 // Rules:
 //  - timed events alert CALENDAR_ALERT_BEFORE_MINUTES before and at the start;
 //    all-day events alert once (their start is already 9:00 on the day)
-//  - an event changed in the calendar updates its reminder; your own colour,
-//    section and pin are kept
+//  - an event changed in the calendar updates its reminder; your own section
+//    and pin are kept. The colour follows Google when Google supplies one,
+//    otherwise your own choice is kept
 //  - ✅ or deleting an imported reminder sticks, unless the event later moves
 //    to a new time
 //  - an imported reminder whose event is no longer upcoming (ended, cancelled,
@@ -20,6 +21,7 @@ import {
   composeNoteText,
   LIMITS,
   truncate,
+  type HexColor,
   type Note,
 } from "./protocol";
 import { deleteNote, putItem, type SyncState } from "./sync";
@@ -40,6 +42,8 @@ export interface CalendarEvent {
   /** Epoch ms. */
   end: number;
   allDay: boolean;
+  /** Exact colour from Google Calendar, when known (not in iCal feeds). */
+  color?: HexColor | null;
 }
 
 export interface CalendarImportResult {
@@ -70,7 +74,7 @@ export function calendarNoteId(eventKey: string): string {
 /** "<start>:<hash of the copied fields>" — what the reminder was made from. */
 export function calendarSourceRef(ev: CalendarEvent): string {
   return `${ev.start}:${hash64(
-    JSON.stringify([ev.title, ev.description, ev.location, ev.end, ev.allDay]),
+    JSON.stringify([ev.title, ev.description, ev.location, ev.end, ev.allDay, ev.color ?? null]),
   )}`;
 }
 
@@ -96,7 +100,7 @@ export function calendarNoteFields(ev: CalendarEvent, prev: Note | null) {
     source: "gcal" as const,
     sourceRef: calendarSourceRef(ev),
     sectionId: prev?.sectionId ?? null,
-    color: prev?.color ?? CALENDAR_REMINDER_COLOR,
+    color: ev.color ?? prev?.color ?? CALENDAR_REMINDER_COLOR,
     images: prev?.images ?? [],
     checklist: prev?.checklist ?? [],
     pinned: prev?.pinned ?? false,

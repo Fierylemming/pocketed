@@ -16,6 +16,7 @@ import {
   type ImportCounts,
   type LocalCalendarState,
 } from "../calendar-import";
+import { takeGoogleReturn } from "../google-return";
 import type { SyncManager } from "../store";
 import type { Config } from "../config";
 import { alertState, requestAlerts, type AlertState } from "../alerts";
@@ -173,11 +174,12 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [local, setLocal] = useState<LocalCalendarState>(() => loadCalendarState());
   const [url, setUrl] = useState("");
-  const [busy, setBusy] = useState<null | "connect" | "sync" | "disconnect">(null);
+  const [busy, setBusy] = useState<null | "connect" | "google" | "sync" | "disconnect">(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [replacing, setReplacing] = useState(false);
+  const [showLink, setShowLink] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -197,6 +199,33 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
     };
   }, [cfg]);
 
+  // Back from Google's sign-in page: report, then import straight away.
+  useEffect(() => {
+    const ret = takeGoogleReturn();
+    if (!ret) return;
+    if (!ret.ok) {
+      setErr(ret.message);
+      return;
+    }
+    noteCalendarConnected();
+    setBusy("google");
+    setMsg("Signed in with Google. Importing your events…");
+    void (async () => {
+      try {
+        const r = await importCalendarNow(manager);
+        setMsg(
+          `Signed in with Google. ${plural(r.added + r.updated, "event")} imported with their colours.`,
+        );
+      } catch (e2) {
+        setMsg(null);
+        setErr(e2 instanceof Error ? e2.message : "Signed in, but the first import failed.");
+      }
+      setLocal(loadCalendarState());
+      setBusy(null);
+      api.calendarStatus(cfg).then(setStatus, () => {});
+    })();
+  }, [manager, cfg]);
+
   const refreshLocal = () => setLocal(loadCalendarState());
 
   async function connect(e: FormEvent) {
@@ -209,6 +238,7 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
       noteCalendarConnected();
       setUrl("");
       setReplacing(false);
+      setShowLink(false);
       try {
         const r = await importCalendarNow(manager);
         setMsg(`Connected. ${plural(r.added + r.updated, "event")} imported.`);
@@ -220,6 +250,23 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
     }
     refreshLocal();
     setBusy(null);
+  }
+
+  /** Leaves Pocketed for Google's consent page; Google sends the browser back here. */
+  async function signInWithGoogle() {
+    setErr(null);
+    setMsg(null);
+    setBusy("google");
+    try {
+      const returnUrl = window.location.origin + window.location.pathname;
+      const { url: googleUrl } = await api.startGoogleSignIn(cfg, returnUrl);
+      window.location.assign(googleUrl);
+    } catch (e2) {
+      setErr(
+        e2 instanceof ApiError && e2.detail ? e2.detail : "Couldn't start Google sign-in. Are you online?",
+      );
+      setBusy(null);
+    }
   }
 
   async function checkNow() {
@@ -261,6 +308,18 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
   const lead = CALENDAR_ALERT_BEFORE_MINUTES;
   const days = CALENDAR_WINDOW_DAYS;
   const imported = importedCount(manager.state);
+  const googleAvailable = !!status?.googleAvailable;
+
+  const googleButton = (label: string, primary = true) => (
+    <button
+      type="button"
+      className={primary ? "primary" : undefined}
+      onClick={signInWithGoogle}
+      disabled={busy !== null}
+    >
+      {busy === "google" ? "Opening Google…" : label}
+    </button>
+  );
 
   const form = (
     <form onSubmit={connect}>
@@ -302,8 +361,15 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
         <button className="primary" disabled={!url.trim() || busy !== null}>
           {busy === "connect" ? "Connecting…" : "Connect"}
         </button>
-        {replacing && (
-          <button type="button" onClick={() => setReplacing(false)} disabled={busy !== null}>
+        {(replacing || showLink) && (
+          <button
+            type="button"
+            onClick={() => {
+              setReplacing(false);
+              setShowLink(false);
+            }}
+            disabled={busy !== null}
+          >
             Cancel
           </button>
         )}
@@ -324,18 +390,68 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
             before and another when they start. All-day events alert at 9:00. Pocketed checks for
             changes every 15 minutes while it's open.
           </p>
-          {form}
+          {googleAvailable ? (
+            <>
+              <p className="muted small">
+                Signing in with Google also copies each event's colour, so your colour-coding
+                carries over. Pocketed can only read your calendar, never change it.
+              </p>
+              {showLink ? (
+                form
+              ) : (
+                <div className="row-buttons">
+                  {googleButton("Sign in with Google")}
+                  <button
+                    type="button"
+                    className="linklike"
+                    onClick={() => setShowLink(true)}
+                    disabled={busy !== null}
+                  >
+                    Use a secret link instead (no colours)
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {form}
+              <p className="muted small">
+                Event colours need “Sign in with Google”, which the server owner can turn on (see
+                SETUP.md).
+              </p>
+            </>
+          )}
         </>
       )}
 
       {status?.connected && (
         <>
-          <p className="ok small">✓ Connected{status.feed ? ` · ${status.feed}` : ""}</p>
+          <p className="ok small">
+            ✓ Connected
+            {status.mode === "google"
+              ? ` as ${status.feed ?? "your Google account"} · colours from Google`
+              : status.feed
+                ? ` · ${status.feed}`
+                : ""}
+          </p>
           <p className="muted small">
             {plural(imported, "upcoming event")} · alerts {lead} min before and at the start ·{" "}
             {local.lastCheck ? `checked ${ago(local.lastCheck)}` : "not checked on this device yet"}
           </p>
-          {local.lastError && <p className="err small">Last check failed: {local.lastError}</p>}
+          {status.problem ? (
+            <>
+              <p className="err small">{status.problem}</p>
+              <div className="row-buttons">{googleButton("Sign in with Google again")}</div>
+            </>
+          ) : (
+            local.lastError && <p className="err small">Last check failed: {local.lastError}</p>
+          )}
+          {status.mode !== "google" && googleAvailable && !replacing && (
+            <p className="muted small">
+              Want your Google colours too? Sign in with Google instead — your existing imported
+              reminders are kept and recoloured.
+            </p>
+          )}
           {replacing ? (
             form
           ) : (
@@ -343,9 +459,14 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
               <button onClick={checkNow} disabled={busy !== null}>
                 {busy === "sync" ? "Checking…" : "Check now"}
               </button>
-              <button onClick={() => setReplacing(true)} disabled={busy !== null}>
-                Change link
-              </button>
+              {status.mode === "google" ? null : (
+                <>
+                  {googleAvailable && googleButton("Sign in with Google", false)}
+                  <button onClick={() => setReplacing(true)} disabled={busy !== null}>
+                    Change link
+                  </button>
+                </>
+              )}
               <button className="danger" onClick={disconnect} disabled={busy !== null}>
                 {busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
               </button>

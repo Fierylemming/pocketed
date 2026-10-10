@@ -14,8 +14,13 @@
 // turn events into reminders; the server only stores and relays the link:
 //   GET  /v1/calendar             status (never returns the secret link)
 //   POST /v1/calendar             { url } check and save / replace the link
-//   GET  /v1/calendar/feed        the calendar (.ics), streamed through
-//   POST /v1/calendar/disconnect  forget the link
+//   GET  /v1/calendar/feed        the calendar: .ics streamed through, or JSON
+//                                 events with colours when signed in with Google
+//   POST /v1/calendar/disconnect  forget the link / Google sign-in
+//
+// Sign in with Google (needs GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET secrets):
+//   POST /v1/google/start         { returnUrl } -> { url } of Google's consent page
+//   GET  /v1/google/callback      public; Google returns here, then back to the app
 
 import {
   LIMITS,
@@ -31,10 +36,29 @@ import {
   proxyFeed,
   type Fetcher,
 } from "./calendar";
+import {
+  disconnectGoogle,
+  finishGoogleSignIn,
+  googleFeed,
+  redirectUriFor,
+  startGoogleSignIn,
+  type GoogleConfig,
+} from "./google";
 import { D1Store, type Store } from "./store";
 
 export interface Env {
   DB: D1Database;
+  /** Optional: enable "Sign in with Google" (see SETUP.md). */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_REDIRECT_URI?: string;
+}
+
+export function googleConfig(env: Partial<Env>): GoogleConfig | undefined {
+  const clientId = env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return undefined;
+  return { clientId, clientSecret, redirectUri: env.GOOGLE_REDIRECT_URI?.trim() || undefined };
 }
 
 const CORS = {
@@ -67,6 +91,8 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 export interface Deps {
   fetch?: Fetcher;
   now?: () => number;
+  /** Present when "Sign in with Google" is set up. */
+  google?: GoogleConfig;
 }
 
 export async function handle(req: Request, store: Store, deps: Deps = {}): Promise<Response> {
@@ -86,6 +112,19 @@ export async function handle(req: Request, store: Store, deps: Deps = {}): Promi
       notes: await store.noteCount(),
       initialized: (await store.getAuth()) !== null,
     });
+  }
+
+  // ---- Google sends the browser back here (public; protected by the one-time state) ----
+  if (url.pathname === "/v1/google/callback" && req.method === "GET") {
+    if (!deps.google) return json({ error: "Sign in with Google isn't set up on this server." }, 404);
+    return finishGoogleSignIn(
+      store,
+      deps.google,
+      redirectUriFor(deps.google, url),
+      url.searchParams,
+      now(),
+      fetcher,
+    );
   }
 
   // ---- public auth-setup endpoints ----
@@ -181,24 +220,55 @@ export async function handle(req: Request, store: Store, deps: Deps = {}): Promi
     return json({ ...page, serverSeq: await store.serverSeq() });
   }
 
-  // ---- calendar link ----
+  // ---- calendar (secret link or Google sign-in) ----
 
-  if (url.pathname.startsWith("/v1/calendar")) {
+  if (url.pathname.startsWith("/v1/calendar") || url.pathname.startsWith("/v1/google/")) {
+    const google = deps.google;
+    const status = () => calendarStatus(store, !!google);
     try {
       if (url.pathname === "/v1/calendar" && req.method === "GET") {
-        return json(await calendarStatus(store));
+        return json(await status());
       }
       if (url.pathname === "/v1/calendar" && req.method === "POST") {
         const body = await readJson(req);
         await connectCalendar(store, body?.url, now(), fetcher);
-        return json(await calendarStatus(store));
+        // One source at a time: a secret link replaces a Google sign-in.
+        await disconnectGoogle(store, fetcher);
+        return json(await status());
       }
       if (url.pathname === "/v1/calendar/feed" && req.method === "GET") {
+        if (await store.getGoogle()) {
+          if (!google) {
+            throw new CalendarInputError(
+              "Sign in with Google is no longer set up on this server. Connect the calendar again in Settings.",
+              502,
+            );
+          }
+          const feed = await googleFeed(store, google, now(), fetcher);
+          return new Response(JSON.stringify(feed), {
+            headers: { "content-type": "application/json", "cache-control": "no-store", ...CORS },
+          });
+        }
         return await proxyFeed(store, fetcher, CORS);
       }
       if (url.pathname === "/v1/calendar/disconnect" && req.method === "POST") {
+        await disconnectGoogle(store, fetcher);
         await store.setCalendar(null);
-        return json(await calendarStatus(store));
+        return json(await status());
+      }
+      if (url.pathname === "/v1/google/start" && req.method === "POST") {
+        if (!google) {
+          return json({ error: "Sign in with Google isn't set up on this server yet (see SETUP.md)." }, 501);
+        }
+        const body = await readJson(req);
+        const authUrl = await startGoogleSignIn(
+          store,
+          google,
+          redirectUriFor(google, url),
+          body?.returnUrl,
+          now(),
+        );
+        return json({ url: authUrl });
       }
     } catch (e) {
       if (e instanceof CalendarInputError) return json({ error: e.message }, e.status);
@@ -229,6 +299,6 @@ export default {
       throw e;
     });
     await schemaReady;
-    return handle(req, store);
+    return handle(req, store, { google: googleConfig(env) });
   },
 };

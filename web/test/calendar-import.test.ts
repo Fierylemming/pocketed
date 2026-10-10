@@ -17,6 +17,8 @@ function fakeServer() {
   const srv = {
     log,
     feed: { status: 200, body: "" } as { status: number; body: string },
+    /** When set, the server answers like a "Sign in with Google" connection. */
+    google: null as unknown,
     connected: true,
     feedCalls: 0,
   };
@@ -37,6 +39,7 @@ function fakeServer() {
       if (srv.feed.status !== 200) {
         return Response.json({ error: "Google didn't accept that link — it may have been reset." }, { status: 502 });
       }
+      if (srv.google) return Response.json(srv.google);
       return new Response(srv.feed.body, { headers: { "content-type": "text/calendar" } });
     }
     return Response.json({ error: "not found" }, { status: 404 });
@@ -130,5 +133,45 @@ describe("importCalendarNow", () => {
     await importCalendarNow(m);
     expect(removeImported(m)).toBe(2);
     expect(importedCount(m.state)).toBe(0);
+  });
+
+  it("imports Google sign-in events with their colours, matching the secret-link reminders", async () => {
+    // First via the secret link (no colours)…
+    server.srv.feed.body = ics(["gym@google.com", "Gym", "20261012T170000Z", "20261012T180000Z"]);
+    const m = manager();
+    await importCalendarNow(m);
+    const id = calendarNoteId("gym@google.com");
+    expect(m.state.notes[id].color).toBe("sky");
+
+    // …then signed in with Google: same reminder, now in Google's Basil green.
+    server.srv.google = {
+      source: "google",
+      calendar: { colorId: "14", backgroundColor: "#9fe1e7" },
+      events: [
+        {
+          iCalUID: "gym@google.com",
+          summary: "Gym",
+          colorId: "10",
+          start: { dateTime: "2026-10-12T17:00:00Z" },
+          end: { dateTime: "2026-10-12T18:00:00Z" },
+        },
+        {
+          iCalUID: "lunch@google.com",
+          summary: "Lunch",
+          start: { dateTime: "2026-10-13T12:00:00+01:00" },
+          end: { dateTime: "2026-10-13T13:00:00+01:00" },
+        },
+      ],
+    };
+    const r = await importCalendarNow(m);
+    expect(r).toEqual({ added: 1, updated: 1, removed: 0 });
+    expect(m.state.notes[id].color).toBe("#0b8043");
+    expect(m.state.notes[calendarNoteId("lunch@google.com")]).toMatchObject({
+      title: "Lunch",
+      color: "#039be5", // the calendar's Peacock blue
+      alertBefore: 30,
+    });
+    await m.syncOnce();
+    expect(server.srv.log.find((o) => o.noteId === id && o.color === "#0b8043")).toBeTruthy();
   });
 });

@@ -77,8 +77,11 @@ describe("calendar endpoints", () => {
     const a = await app();
     expect((await a.call("/v1/calendar")).body).toEqual({
       connected: false,
+      mode: null,
       feed: null,
       connectedAt: null,
+      googleAvailable: false,
+      problem: null,
     });
     const r = await a.call("/v1/calendar/feed");
     expect(r.status).toBe(409);
@@ -113,6 +116,9 @@ describe("calendar endpoints", () => {
     expect(c.status).toBe(200);
     expect(c.body).toEqual({
       connected: true,
+      mode: "ical",
+      googleAvailable: false,
+      problem: null,
       feed: "calendar.google.com · …/basic.ics",
       connectedAt: 1_000,
     });

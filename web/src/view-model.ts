@@ -2,12 +2,16 @@ import {
   effectiveReminderColor,
   formatLeadTime,
   formatReminderLabel,
+  getReminderColor,
+  GOOGLE_COLORS,
+  isHexColor,
   isReminderItem,
   REMINDER_COLORS,
   repeatLabel,
   sortNotes,
   visibleSections,
   type Note,
+  type ReminderColorDef,
   type ReminderColorId,
   type Section,
 } from "@pocketed/shared";
@@ -95,27 +99,45 @@ export function sectionCounts(
   };
 }
 
-export function reminderColorCounts(
-  allNotes: Note[],
-): Record<ReminderColorId | "all", number> {
-  const counts: Record<ReminderColorId | "all", number> = {
-    all: 0,
-    ruby: 0,
-    amber: 0,
-    emerald: 0,
-    sky: 0,
-    violet: 0,
-    rose: 0,
-  };
+/** Reminder counts per colour id (named or exact hex), plus "all". */
+export function reminderColorCounts(allNotes: Note[]): Record<string, number> {
+  const counts: Record<string, number> = { all: 0 };
+  for (const rc of REMINDER_COLORS) counts[rc.id] = 0;
   for (const n of allNotes) {
     if (n.deleted || n.reminderAt == null) continue;
     counts.all += 1;
     const c = effectiveReminderColor(n);
-    if (REMINDER_COLORS.some((rc) => rc.id === c)) {
-      counts[c] += 1;
-    }
+    counts[c] = (counts[c] ?? 0) + 1;
   }
   return counts;
+}
+
+/**
+ * Colours beyond Pocketed's own six that reminders currently use (exact
+ * Google Calendar colours), in Google's palette order, then custom ones.
+ */
+export function extraReminderColors(allNotes: Note[]): ReminderColorDef[] {
+  const seen = new Set<string>();
+  for (const n of allNotes) {
+    if (n.deleted || n.reminderAt == null) continue;
+    const c = effectiveReminderColor(n);
+    if (isHexColor(c)) seen.add(c);
+  }
+  const order = (hex: string) => {
+    const i = GOOGLE_COLORS.findIndex((g) => g.hex === hex);
+    return i < 0 ? GOOGLE_COLORS.length : i;
+  };
+  return [...seen]
+    .sort((a, b) => order(a) - order(b) || a.localeCompare(b))
+    .map((hex) => getReminderColor(hex as ReminderColorId));
+}
+
+/**
+ * Choices for a colour picker: an item's exact Google colour (if it has one)
+ * first, so it stays selectable, then Pocketed's six.
+ */
+export function colorPickerChoices(current: ReminderColorId | null | undefined): readonly ReminderColorDef[] {
+  return isHexColor(current) ? [getReminderColor(current), ...REMINDER_COLORS] : REMINDER_COLORS;
 }
 
 /** Case-insensitive match against title, body, text, location, and checklist items. Blank query matches all. */

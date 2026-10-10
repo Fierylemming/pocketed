@@ -30,7 +30,16 @@ export const CALENDAR_REMINDER_COLOR: ReminderColorId = "sky";
 
 export type ItemKind = "note" | "reminder";
 
-export type ReminderColorId =
+/** A colour copied exactly from elsewhere (Google Calendar), as lowercase "#rrggbb". */
+export type HexColor = `#${string}`;
+
+/**
+ * A reminder's colour: one of Pocketed's six named colours, or an exact hex
+ * colour (imported events keep their Google Calendar colour).
+ */
+export type ReminderColorId = PaletteColorId | HexColor;
+
+export type PaletteColorId =
   | "ruby"
   | "amber"
   | "emerald"
@@ -94,11 +103,66 @@ export const REMINDER_COLORS: readonly ReminderColorDef[] = [
 
 export const DEFAULT_REMINDER_COLOR: ReminderColorId = "amber";
 
-export function isValidReminderColor(c: unknown): c is ReminderColorId {
-  return typeof c === "string" && REMINDER_COLORS.some((rc) => rc.id === c);
+const HEX_RE = /^#[0-9a-f]{6}$/;
+
+export function isHexColor(c: unknown): c is HexColor {
+  return typeof c === "string" && HEX_RE.test(c);
 }
 
+export function isValidReminderColor(c: unknown): c is ReminderColorId {
+  return typeof c === "string" && (REMINDER_COLORS.some((rc) => rc.id === c) || HEX_RE.test(c));
+}
+
+/**
+ * Google Calendar's colours as shown in its (modern) interface, by name. The
+ * API reports event colours by id ("1"-"11") and calendar colours in the
+ * classic palette, so both are translated to these exact values.
+ */
+export const GOOGLE_COLORS: readonly { name: string; hex: HexColor }[] = [
+  { name: "Tomato", hex: "#d50000" },
+  { name: "Flamingo", hex: "#e67c73" },
+  { name: "Tangerine", hex: "#f4511e" },
+  { name: "Banana", hex: "#f6bf26" },
+  { name: "Sage", hex: "#33b679" },
+  { name: "Basil", hex: "#0b8043" },
+  { name: "Peacock", hex: "#039be5" },
+  { name: "Blueberry", hex: "#3f51b5" },
+  { name: "Lavender", hex: "#7986cb" },
+  { name: "Grape", hex: "#8e24aa" },
+  { name: "Graphite", hex: "#616161" },
+  // calendar-only colours
+  { name: "Radicchio", hex: "#ad1457" },
+  { name: "Cherry Blossom", hex: "#d81b60" },
+  { name: "Pumpkin", hex: "#ef6c00" },
+  { name: "Mango", hex: "#f09300" },
+  { name: "Citron", hex: "#e4c441" },
+  { name: "Avocado", hex: "#c0ca33" },
+  { name: "Pistachio", hex: "#7cb342" },
+  { name: "Eucalyptus", hex: "#009688" },
+  { name: "Cobalt", hex: "#4285f4" },
+  { name: "Wisteria", hex: "#b39ddb" },
+  { name: "Amethyst", hex: "#9e69af" },
+  { name: "Cocoa", hex: "#795548" },
+  { name: "Birch", hex: "#a79b8e" },
+];
+
+function hexToRgba(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/** Display info for any reminder colour (named or exact hex). */
 export function getReminderColor(color?: ReminderColorId | null): ReminderColorDef {
+  if (isHexColor(color)) {
+    const named = GOOGLE_COLORS.find((g) => g.hex === color);
+    return {
+      id: color,
+      label: named?.name ?? "Custom",
+      hex: color,
+      bg: hexToRgba(color, 0.16),
+      border: color,
+    };
+  }
   return REMINDER_COLORS.find((c) => c.id === color) ?? REMINDER_COLORS[1];
 }
 

@@ -1,15 +1,17 @@
 // Google Calendar auto-import, run by the app on whichever device is open.
 //
-// The sync server keeps the secret iCal link and relays the feed; this module
-// parses it (ical.js, loaded on demand) and turns upcoming events into
-// reminders with the shared reconcileCalendar(), so the changes sync to every
-// device like any other edit.
+// The sync server keeps the connection — the secret iCal link, or a "Sign in
+// with Google" token — and relays the calendar. This module turns upcoming
+// events into reminders with the shared reconcileCalendar(), so the changes
+// sync to every device like any other edit. iCal feeds are parsed here with
+// ical.js (loaded on demand); Google sends ready-made events with colours.
 //
 // When: shortly after the app opens, then every 15 minutes while it's on
 // screen (hourly in the background), and on "Check now" in Settings.
 
 import {
   CALENDAR_WINDOW_DAYS,
+  googleFeedToCalendarEvents,
   MAX_IMPORTED_EVENTS,
   reconcileCalendar,
   removeImportedReminders,
@@ -99,21 +101,28 @@ async function run(manager: SyncManager): Promise<ImportCounts> {
   try {
     // Work from fresh state so a reminder dismissed on another device stays dismissed.
     await manager.syncOnce();
-    const text = await api.calendarFeed(manager.cfg);
-    const { parseCalendar, CalendarParseError } = await import("./ical");
-    let events;
-    try {
+    const data = await api.calendarFeed(manager.cfg);
+    const window = () => {
       const now = Date.now();
-      events = parseCalendar(text, {
+      return {
         from: now,
         to: now + CALENDAR_WINDOW_DAYS * 24 * 60 * MIN,
         timeZone: deviceTimeZone(),
         maxEvents: MAX_IMPORTED_EVENTS,
-      });
-    } catch (e) {
-      throw new Error(
-        e instanceof CalendarParseError ? e.message : "The calendar couldn't be read.",
-      );
+      };
+    };
+    let events;
+    if (data.kind === "google") {
+      events = googleFeedToCalendarEvents(data.feed, window());
+    } else {
+      const { parseCalendar, CalendarParseError } = await import("./ical");
+      try {
+        events = parseCalendar(data.text, window());
+      } catch (e) {
+        throw new Error(
+          e instanceof CalendarParseError ? e.message : "The calendar couldn't be read.",
+        );
+      }
     }
     const now = Date.now();
     const preview = reconcileCalendar(manager.state, events, now);

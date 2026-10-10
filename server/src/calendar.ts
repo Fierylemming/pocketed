@@ -1,4 +1,5 @@
 // Google Calendar link (Option A: the calendar's "secret address in iCal format").
+// Option B, "Sign in with Google" (with event colours), lives in google.ts.
 //
 // The Worker only keeps the link and passes the feed through to the apps;
 // the apps parse it and create/update reminders through the normal op log.
@@ -15,9 +16,15 @@ export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface CalendarStatus {
   connected: boolean;
-  /** Safe-to-show description of the link, never the secret itself. */
+  /** How it's connected: Google sign-in (with colours) or the secret iCal link. */
+  mode: "google" | "ical" | null;
+  /** Safe-to-show description: the Google account, or a hint of the link (never the secret). */
   feed: string | null;
   connectedAt: number | null;
+  /** Whether this server is set up for "Sign in with Google". */
+  googleAvailable: boolean;
+  /** Something the user has to fix (e.g. sign in to Google again). */
+  problem: string | null;
 }
 
 export class CalendarInputError extends Error {
@@ -56,12 +63,29 @@ export function feedHint(url: string): string {
   }
 }
 
-export async function calendarStatus(store: Store): Promise<CalendarStatus> {
+export async function calendarStatus(
+  store: Store,
+  googleAvailable = false,
+): Promise<CalendarStatus> {
+  const google = await store.getGoogle();
+  if (google) {
+    return {
+      connected: true,
+      mode: "google",
+      feed: google.email ?? "Google account",
+      connectedAt: google.connectedAt,
+      googleAvailable,
+      problem: google.problem,
+    };
+  }
   const cfg = await store.getCalendar();
   return {
     connected: cfg !== null,
+    mode: cfg ? "ical" : null,
     feed: cfg ? feedHint(cfg.url) : null,
     connectedAt: cfg?.connectedAt ?? null,
+    googleAvailable,
+    problem: null,
   };
 }
 
