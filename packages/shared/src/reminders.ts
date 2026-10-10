@@ -82,3 +82,54 @@ export function reminderDiff(
     toCancel: currentIds.filter((id) => !wantedIds.has(id)),
   };
 }
+
+/** Notes whose reminder fell due inside the half-open window (from, to]. */
+export function remindersDueBetween(notes: Note[], from: number, to: number): Note[] {
+  return notes.filter(
+    (n) =>
+      !n.deleted &&
+      typeof n.reminderAt === "number" &&
+      n.reminderAt > from &&
+      n.reminderAt <= to,
+  );
+}
+
+export interface QuickReminder {
+  id: string;
+  label: string;
+  at: number;
+}
+
+/** Quick-pick reminder times. Every `at` is strictly in the future. */
+export function quickReminders(now: number): QuickReminder[] {
+  const tomorrowNine = new Date(now);
+  tomorrowNine.setDate(tomorrowNine.getDate() + 1);
+  tomorrowNine.setHours(9, 0, 0, 0);
+  return [
+    { id: "15m", label: "In 15 minutes", at: roundToMinute(now + 15 * 60_000) },
+    { id: "1h", label: "In 1 hour", at: roundToMinute(now + 60 * 60_000) },
+    { id: "3h", label: "In 3 hours", at: roundToMinute(now + 3 * 60 * 60_000) },
+    { id: "tomorrow", label: "Tomorrow 9:00", at: tomorrowNine.getTime() },
+  ];
+}
+
+const LOCAL_INPUT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+
+/** Formats a timestamp for an <input type="datetime-local">, in local time. */
+export function toLocalInput(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Parses a datetime-local value (local time). Returns null when invalid. */
+export function fromLocalInput(value: string): number | null {
+  const m = LOCAL_INPUT.exec(value.trim());
+  if (!m) return null;
+  const [y, mo, da, h, mi] = m.slice(1).map(Number);
+  const d = new Date(y, mo - 1, da, h, mi, 0, 0);
+  // reject overflowed values such as 2026-02-31
+  if (d.getFullYear() !== y || d.getMonth() !== mo - 1 || d.getDate() !== da) return null;
+  if (d.getHours() !== h || d.getMinutes() !== mi) return null;
+  return d.getTime();
+}

@@ -168,3 +168,61 @@ header .icon { margin-left: auto; font-size: 20px; }
 }
 .modal { text-align: left; }
 hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
+
+/* ---- v2.2 additions ---------------------------------------------------- */
+
+button.small-btn { min-height: 36px; padding: 6px 12px; font-size: 14px; }
+button.linklike.done { display: block; margin: 12px auto 0; }
+h3 { margin: 4px 0 6px; font-size: 16px; text-align: left; }
+section { text-align: left; }
+.center-text { text-align: center; }
+
+header .pill { cursor: pointer; }
+
+.composer { flex-direction: column; gap: 6px; }
+.composer-row { display: flex; gap: 8px; }
+.composer-row input { flex: 1; }
+
+.reminder-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.reminder-picker select { width: auto; min-width: 150px; flex: 0 0 auto; }
+.reminder-picker input[type="datetime-local"] { width: auto; flex: 1 1 180px; }
+
+.search { margin-bottom: 10px; }
+
+.section { margin-bottom: 18px; }
+.section-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 6px 2px 8px;
+  text-align: left;
+}
+.section.due .section-title { color: var(--danger); }
+
+.note.is-due { border-color: var(--danger); }
+.note.is-due .meta { color: var(--danger); }
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: #222b36;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.note .actions { gap: 2px; }
+.note .text { padding-right: 116px; }
+.modal section + section { margin-top: 0; }
+.modal section { margin-bottom: 4px; }
+
+@media (max-width: 420px) {
+  header h1 { font-size: 20px; }
+  .pill { font-size: 11px; }
+}

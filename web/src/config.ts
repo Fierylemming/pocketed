@@ -1,8 +1,10 @@
 // The server URL is baked in at build time by CI (VITE_SERVER_URL), so the
 // published site only ever asks for the password. When running a local dev
 // build the field is shown instead.
+// `npm run dev` talks to a local API started with `npm run dev:server`.
 export const DEFAULT_SERVER_URL: string =
-  (import.meta.env.VITE_SERVER_URL as string | undefined) ?? "";
+  (import.meta.env.VITE_SERVER_URL as string | undefined) ??
+  (import.meta.env.DEV ? "http://localhost:8787" : "");
 
 export interface Config {
   serverUrl: string;

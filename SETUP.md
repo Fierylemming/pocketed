@@ -1,82 +1,85 @@
-# Pocketed v2 — setup (laptop, Windows, PowerShell)
+# Setup & deploy
 
-Assumes v1 was completed: Node + Git installed, `wrangler login` done, GitHub repo exists,
-Cloudflare account exists and the `POCKETED_TOKENS` secret is set (your password — it carries over).
+This covers how Pocketed is deployed and what each piece needs. For everyday changes, you only
+need the **push → pull request → merge** loop in the README; the workflows do the rest.
 
-## 1. New code on the laptop
+Commands below work in PowerShell, Command Prompt, macOS and Linux shells.
 
-Download `pocketed-v2.zip`. Rename the old folder `…\Calendar\pocketed` to `pocketed-old`
-(keep it as a spare), extract the zip so you get a fresh `…\Calendar\pocketed`.
+## 1. Accounts you need
 
-```powershell
-cd C:\Users\maxha\Desktop\Apps\Calendar\pocketed
+- **GitHub**: the repository (`Fierylemming/pocketed`).
+- **Cloudflare**: a free account with Workers and Pages enabled.
+
+## 2. Install (once per machine, only if you run things locally)
+
+Requires Node 20 or newer.
+
+```
 npm install
+npx wrangler login          # opens a browser; only needed for manual deploys
 ```
 
-## 2. New database
+## 3. Database (already set up for this project)
 
-```powershell
+`server/wrangler.toml` already holds the D1 database id. If you ever start from scratch:
+
+```
 npx wrangler d1 create pocketed-v2
 ```
-Copy the printed `database_id`, open `server\wrangler.toml` in Notepad,
-replace `PASTE_YOUR_DATABASE_ID_HERE`, save.
 
-## 3. Password — now lives in the app itself
+Paste the printed `database_id` into `server/wrangler.toml`.
 
-Nothing to do in the terminal. When you first open the new website it asks you to
-**create** a password and shows a one-time **recovery key** (write it down).
-Later, ⚙️ Settings lets you change the password or generate a new recovery key.
-PowerShell / dashboard are only ever needed for code updates.
+## 4. Password and recovery key
 
-## 4. Deploy the server once
+Nothing to configure. On first visit the website asks you to create a password and shows a
+one-time **recovery key**. Change the password or generate a new recovery key in ⚙️ Settings.
 
-```powershell
-npm run deploy:server
+## 5. GitHub settings (once)
+
+**Settings → Secrets and variables → Actions**
+
+Secrets:
+
+| Name | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Custom token with: Account · Workers Scripts: Edit, Account · D1: Edit, Account · Pages: Edit, Account · Account Settings: Read |
+| `CLOUDFLARE_ACCOUNT_ID` | Shown on the Cloudflare **Workers & Pages** overview page |
+
+Variables:
+
+| Name | Value |
+| --- | --- |
+| `WORKER_URL` | Your worker address, e.g. `https://pocketed.<your-subdomain>.workers.dev` (baked into the site) |
+| `PAGES_PROJECT` | Your Pages project name, e.g. `pocketed-yourname` |
+
+## 6. Cloudflare Pages project (once)
+
 ```
-✔ prints `https://pocketed-….workers.dev`. Open `…/health` → you should see `"version":"2"`.
-
-## 5. Create the website's home (once)
-
-```powershell
-npx wrangler pages project create pocketed-fierylemming --production-branch=main
+npx wrangler pages project create pocketed-yourname --production-branch=main
 ```
-(Any name you like; `pocketed-<yourname>` is usually free. Remember it.)
 
-## 6. GitHub plumbing (once)
+Use the same name as `PAGES_PROJECT` above.
 
-1. Cloudflare dashboard → avatar → **My Profile → API Tokens** → your token → **Edit** →
-   add the row *Account · Pages · Edit* → Save.
-2. GitHub repo → **Settings → Secrets and variables → Actions → Variables** tab → add:
-   - `WORKER_URL` = `https://pocketed-maxha.workers.dev` (your worker address from step 4)
-   - `PAGES_PROJECT` = the name from step 5
+## 7. Deploy
 
-(The two *secrets* from v1 stay as they are.)
+Deploys are automatic: every merge to `main` runs **Deploy Pocketed** (tests → typecheck →
+server → website). You can also run it by hand from the **Actions** tab (*Run workflow*).
 
-## 7. Push the new code (replaces the old repo content)
+Manual deploys from your machine, if ever needed:
 
-```powershell
-git init
-git branch -M main
-git add -A
-git commit -m "Pocketed v2"
-git remote add origin https://github.com/Fierylemming/pocketed.git
-git push -u origin main --force
 ```
-✔ Actions tab → "Deploy Pocketed" goes green (tests → server → website).
-
-## 8. Use it
-
-Open **https://pocketed-fierylemming.pages.dev** (your name from step 5).
-Type your password once. Bookmark it / pin the tab. That's the whole daily ritual now:
-open the page, type notes.
-
-## 9. Optional v1 cleanup (after everything above works)
-
-```powershell
-npx wrangler d1 delete pocketed        # the old v1 database
+npm run deploy:server       # sync server
+npm run check               # tests + typecheck + build
+VITE_SERVER_URL=https://pocketed.<your-subdomain>.workers.dev npm run build:web
+npx wrangler pages deploy web/dist --project-name=pocketed-yourname --branch=main
 ```
-and delete the `pocketed-old` folder on the laptop.
 
-## 10. Phone app
+Check the server with `https://<worker>/health`: it should report `"version":"2"`.
 
-Arrives as the next update; installs over nothing, uses the same password and server.
+## 8. Troubleshooting
+
+- **CI fails on the build step**: `WORKER_URL` isn't set. Add it under Variables.
+- **Deploy fails with an auth error**: the Cloudflare token is missing one of the permissions in step 5.
+- **Site says "Can't reach that server address"**: check `/health` on the worker; check the address under
+  "advanced: custom server address" on the login screen.
+- **Notifications don't appear**: check ⚙️ Settings → Reminder alerts. The app must be running (open or in the background).
