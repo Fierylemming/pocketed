@@ -4,7 +4,9 @@
 import {
   DEFAULT_REMINDER_COLOR,
   itemTitle,
+  REPEAT_OPTIONS,
   type Note,
+  type RepeatId,
   type ReminderColorId,
 } from "./protocol";
 
@@ -188,18 +190,23 @@ export function buildCalendarMonth(
   colorFilter: ReminderColorId | "all" = "all",
 ): CalendarDay[] {
   const filtered = filterRemindersByColor(notes, colorFilter);
-  const byDay = new Map<string, Note[]>();
-  for (const r of filtered) {
-    const key = localDateKey(r.reminderAt as number);
-    const list = byDay.get(key) ?? [];
-    list.push(r);
-    byDay.set(key, list);
-  }
-
   const todayKey = localDateKey(now);
   const firstOfMonth = new Date(year, month, 1);
   const startOffset = firstOfMonth.getDay(); // 0 (Sun) .. 6 (Sat)
   const gridStart = new Date(year, month, 1 - startOffset);
+  const gridEnd = new Date(year, month, 1 - startOffset + 42);
+
+  // Repeating reminders appear on every day they fall due in this grid.
+  // Each occurrence is a copy of the note with its own reminderAt.
+  const byDay = new Map<string, Note[]>();
+  for (const r of filtered) {
+    for (const at of occurrencesBetween(r, gridStart.getTime(), gridEnd.getTime())) {
+      const key = localDateKey(at);
+      const list = byDay.get(key) ?? [];
+      list.push(at === r.reminderAt ? r : { ...r, reminderAt: at });
+      byDay.set(key, list);
+    }
+  }
 
   const days: CalendarDay[] = [];
   for (let i = 0; i < 42; i++) {
@@ -220,4 +227,114 @@ export function buildCalendarMonth(
     });
   }
   return days;
+}
+
+// ---- Repeating reminders ----
+
+const MAX_STEPS = 5000;
+
+/** Moves `at` forward by one repeat step, in local time (keeps the wall-clock time across DST). */
+export function stepRepeat(at: number, repeat: RepeatId): number {
+  const d = new Date(at);
+  switch (repeat) {
+    case "daily":
+      d.setDate(d.getDate() + 1);
+      break;
+    case "weekdays":
+      do {
+        d.setDate(d.getDate() + 1);
+      } while (d.getDay() === 0 || d.getDay() === 6);
+      break;
+    case "weekly":
+      d.setDate(d.getDate() + 7);
+      break;
+    case "biweekly":
+      d.setDate(d.getDate() + 14);
+      break;
+    case "monthly": {
+      // Keep the day-of-month; clamp to the last day for short months (31st -> 30th/28th).
+      const day = d.getDate();
+      d.setDate(1);
+      d.setMonth(d.getMonth() + 1);
+      const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      d.setDate(Math.min(day, lastDay));
+      break;
+    }
+    case "yearly": {
+      const day = d.getDate();
+      const month = d.getMonth();
+      d.setDate(1);
+      d.setFullYear(d.getFullYear() + 1);
+      d.setMonth(month);
+      const lastDay = new Date(d.getFullYear(), month + 1, 0).getDate();
+      d.setDate(Math.min(day, lastDay));
+      break;
+    }
+    default:
+      return at;
+  }
+  return d.getTime();
+}
+
+/**
+ * The first occurrence strictly after `after`, starting from the series anchor
+ * `at`. Returns null for one-off reminders (repeat "none"/missing).
+ */
+export function nextOccurrence(
+  at: number,
+  repeat: RepeatId | null | undefined,
+  after: number,
+): number | null {
+  if (!repeat || repeat === "none") return null;
+  let next = at;
+  for (let i = 0; i < MAX_STEPS && next <= after; i++) {
+    const step = stepRepeat(next, repeat);
+    if (step <= next) break; // defensive: never loop on a stuck clock
+    next = step;
+  }
+  return next;
+}
+
+/**
+ * Marks the current occurrence done. Repeating reminders roll forward to their
+ * next time (strictly after `now`); one-off reminders clear. Used by the
+ * "Done" button and when a repeating alert fires.
+ */
+export function reminderAfterDone(
+  reminderAt: number | null,
+  repeat: RepeatId | null | undefined,
+  now: number,
+): number | null {
+  if (reminderAt == null) return null;
+  return nextOccurrence(reminderAt, repeat, Math.max(now, reminderAt));
+}
+
+/**
+ * Every time a reminder fires within the half-open window [from, to), starting
+ * from its stored (next pending) time. One-off reminders yield at most one.
+ */
+export function occurrencesBetween(
+  note: Note,
+  from: number,
+  to: number,
+  cap = 500,
+): number[] {
+  if (typeof note.reminderAt !== "number") return [];
+  const out: number[] = [];
+  let at: number = note.reminderAt;
+  const repeat = note.repeat ?? "none";
+  for (let i = 0; i < MAX_STEPS && at < to && out.length < cap; i++) {
+    if (at >= from) out.push(at);
+    if (repeat === "none") break;
+    const step = stepRepeat(at, repeat);
+    if (step <= at) break;
+    at = step;
+  }
+  return out;
+}
+
+/** Human label for a repeating reminder, e.g. "Every week" (empty when it doesn't repeat). */
+export function repeatSummary(repeat: RepeatId | null | undefined): string {
+  if (!repeat || repeat === "none") return "";
+  return REPEAT_OPTIONS.find((o) => o.id === repeat)?.label ?? "";
 }

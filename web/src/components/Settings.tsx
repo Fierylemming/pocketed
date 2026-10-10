@@ -3,6 +3,7 @@ import { genRecovery, passwordError } from "@pocketed/shared";
 import { api } from "../api";
 import type { Config } from "../config";
 import { alertState, requestAlerts, type AlertState } from "../alerts";
+import { getTextSize, setTextSize, type TextSize } from "../scale";
 import {
   canPromptInstall,
   isInstalled,
@@ -25,6 +26,8 @@ export function Settings({
       <div className="card modal" onClick={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
 
+        <TextSizePicker />
+        <hr />
         <Alerts />
         <hr />
         <InstallApp />
@@ -47,6 +50,38 @@ export function Settings({
         </button>
       </div>
     </div>
+  );
+}
+
+function TextSizePicker() {
+  const [size, setSize] = useState<TextSize>(() => getTextSize());
+  const options: { id: TextSize; label: string }[] = [
+    { id: "small", label: "Smaller" },
+    { id: "default", label: "Standard" },
+    { id: "large", label: "Larger" },
+  ];
+  return (
+    <section>
+      <h3>Text size</h3>
+      <p className="muted small">Scales the whole app. Phones also fit themselves automatically.</p>
+      <div className="segmented" role="radiogroup" aria-label="Text size">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={size === o.id}
+            className={size === o.id ? "active" : ""}
+            onClick={() => {
+              setSize(o.id);
+              setTextSize(o.id);
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 

@@ -19,6 +19,7 @@ import {
   itemBody,
   itemTitle,
   LIMITS,
+  markReminderDone,
   quickReminders,
   REMINDER_COLORS,
   renameSection,
@@ -87,6 +88,11 @@ export function Notes({
   // Calendar colour filter on Home screen
   const [colorFilter, setColorFilter] = useState<ReminderColorId | "all">("all");
 
+  // Sidebar (mobile drawer) + inline "new section" in the sidebar
+  const [navOpen, setNavOpen] = useState(false);
+  const [addingSidebarSection, setAddingSidebarSection] = useState(false);
+  const [sidebarSectionName, setSidebarSectionName] = useState("");
+
   // Search, Settings, Editing, and Interactive Modals
   const [query, setQuery] = useState("");
   const [settings, setSettings] = useState(false);
@@ -105,7 +111,15 @@ export function Notes({
 
   // Fire reminder alerts while the app is open.
   useEffect(() => {
-    const w = new ReminderWatcher(() => Object.values(manager.state.notes));
+    const w = new ReminderWatcher(
+      () => Object.values(manager.state.notes),
+      // A repeating reminder that just alerted moves on to its next occurrence.
+      (n) => {
+        if (n.repeat && n.repeat !== "none") {
+          manager.mutate((st) => markReminderDone(st, n.id, Date.now()));
+        }
+      },
+    );
     w.start();
     return () => w.stop();
   }, [manager]);
@@ -241,351 +255,529 @@ export function Notes({
     );
   }
 
+  const sidebarCounts = {
+    due: homeSections.due.length,
+    total: all.length,
+  };
+
+  function goTo(sectionId: string | null) {
+    setActiveSectionId(sectionId);
+    setQuery("");
+    setNavOpen(false);
+    setRenamingSectionId(null);
+    const main = document.querySelector(".main");
+    if (main) main.scrollTop = 0;
+  }
+
+  function goHomeAndScroll(anchor: string) {
+    goTo(null);
+    // Give Home a tick to render before scrolling to the anchor.
+    setTimeout(() => {
+      document
+        .getElementById(anchor)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
+
+  function handleSidebarCreateSection(e: FormEvent) {
+    e.preventDefault();
+    const name = sidebarSectionName.trim();
+    if (!name) return;
+    manager.mutate((s) => addSection(s, name, Date.now()).state);
+    setSidebarSectionName("");
+    setAddingSidebarSection(false);
+  }
+
+  const pageTitle =
+    activeSectionId === null
+      ? "Home"
+      : activeSectionObj
+        ? activeSectionObj.name
+        : "General";
+  const pageIcon =
+    activeSectionId === null ? "🏠" : activeSectionObj ? "📁" : "🗂️";
+  const pageSub =
+    activeSectionId === null
+      ? `${homeSections.due.length} due · ${homeSections.upcoming.length} upcoming reminders · ${homeSections.notes.length} notes`
+      : (() => {
+          const c = sectionCounts(all, targetSectionId, now);
+          return `${c.notes} ${c.notes === 1 ? "note" : "notes"} · ${c.reminders} ${c.reminders === 1 ? "reminder" : "reminders"}${c.due ? ` · ${c.due} due` : ""}`;
+        })();
+
   return (
-    <div className="app">
-      <header>
-        {activeSectionId !== null && (
-          <button
-            type="button"
-            className="small-btn back-btn"
-            onClick={() => {
-              setActiveSectionId(null);
-              setQuery("");
-            }}
-            aria-label="Back to Home"
-          >
-            ← Home
-          </button>
-        )}
-        <h1>Pocketed</h1>
-        <button
-          className={"pill " + manager.phase}
-          title="Tap to sync now"
-          onClick={() => void manager.syncOnce()}
-        >
-          {status}
-        </button>
-        <button
-          className="icon"
-          aria-label="Settings"
-          onClick={() => setSettings(true)}
-        >
-          ⚙️
-        </button>
-      </header>
-
-      {!isInstalled() &&
-        canPromptInstall() &&
-        !localStorage.getItem(DISMISS_INSTALL_KEY) && <InstallBanner />}
-
-      {/* If inside a Section Folder, show the Folder Banner / Header */}
-      {activeSectionId !== null && (
-        <div className="folder-banner">
-          <div className="folder-banner-main">
-            <span className="folder-icon">📁</span>
-            {renamingSectionId === activeSectionId && activeSectionObj ? (
-              <div className="inline-rename">
-                <input
-                  autoFocus
-                  value={renameSectionValue}
-                  onChange={(e) => setRenameSectionValue(e.target.value)}
-                  aria-label="Section name"
-                />
-                <button
-                  type="button"
-                  className="small-btn primary"
-                  onClick={() => handleSaveRenameSection(activeSectionObj.id)}
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  className="small-btn"
-                  onClick={() => setRenamingSectionId(null)}
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <div>
-                <h2 className="folder-title">
-                  {activeSectionObj ? activeSectionObj.name : "General (Unsorted)"}
-                </h2>
-                <p className="muted small folder-meta">
-                  Section folder — add notes and reminders below
-                </p>
-              </div>
-            )}
+    <div className={"shell" + (navOpen ? " nav-open" : "")}>
+      {/* ---- Sidebar (Notion-style workspace navigation) ---- */}
+      <aside className="sidebar" aria-label="Navigation">
+        <div className="sidebar-top">
+          <div className="workspace">
+            <span className="workspace-logo" aria-hidden="true">🗒️</span>
+            <span className="workspace-name">Pocketed</span>
           </div>
-          {activeSectionObj && renamingSectionId !== activeSectionObj.id && (
-            <div className="folder-actions">
-              <button
-                type="button"
-                className="small-btn"
-                onClick={() => {
-                  setRenamingSectionId(activeSectionObj.id);
-                  setRenameSectionValue(activeSectionObj.name);
-                }}
-              >
-                ✏️ Rename
-              </button>
-              <button
-                type="button"
-                className="small-btn danger-outline"
-                onClick={() => handleDeleteSection(activeSectionObj)}
-              >
-                🗑️ Delete
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Two Separate Buttons to choose Note vs Reminder creation */}
-      <div className="creator-shell" ref={composerRef}>
-        <div className="creator-switcher" role="group" aria-label="Choose what to create">
           <button
             type="button"
-            className={
-              "creator-mode-btn" + (composerKind === "note" ? " active" : "")
-            }
-            onClick={() => {
-              setComposerKind("note");
-              setComposerPreselectAt(null);
-            }}
+            className="icon-btn sidebar-close"
+            aria-label="Close menu"
+            onClick={() => setNavOpen(false)}
           >
-            📝 New Note
-          </button>
-          <button
-            type="button"
-            className={
-              "creator-mode-btn" + (composerKind === "reminder" ? " active" : "")
-            }
-            onClick={() => setComposerKind("reminder")}
-          >
-            ⏰ New Reminder
+            ✕
           </button>
         </div>
 
-        {composerKind === "note" ? (
-          <NoteComposer
-            key={`note-${composerKey}-${activeSectionId ?? "home"}`}
-            defaultSectionId={targetSectionId}
-            sections={userSections}
-            manager={manager}
-          />
-        ) : (
-          <ReminderComposer
-            key={`rem-${composerKey}-${activeSectionId ?? "home"}`}
-            defaultSectionId={targetSectionId}
-            initialAt={composerPreselectAt}
-            initialColor={composerPreselectColor}
-            sections={userSections}
-            manager={manager}
-          />
-        )}
-      </div>
+        <nav className="sidebar-nav">
+          <button
+            type="button"
+            className={"nav-item" + (activeSectionId === null ? " active" : "")}
+            onClick={() => goTo(null)}
+          >
+            <span className="nav-icon">🏠</span>
+            <span className="nav-label">Home</span>
+          </button>
+          <button
+            type="button"
+            className="nav-item"
+            onClick={() => goHomeAndScroll("calendar")}
+          >
+            <span className="nav-icon">📅</span>
+            <span className="nav-label">Calendar</span>
+          </button>
+          <button
+            type="button"
+            className="nav-item"
+            onClick={() => goHomeAndScroll("due")}
+          >
+            <span className="nav-icon">⏰</span>
+            <span className="nav-label">Due now</span>
+            {sidebarCounts.due > 0 && (
+              <span className="nav-count due">{sidebarCounts.due}</span>
+            )}
+          </button>
+        </nav>
 
-      {/* Search bar */}
-      <div className="search">
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={
-            activeSectionId
-              ? `Search in ${activeSectionObj ? activeSectionObj.name : "General"}…`
-              : "Search all notes & reminders…"
-          }
-          aria-label="Search notes"
-        />
-      </div>
+        <div className="sidebar-group">
+          <div className="sidebar-group-head">
+            <span>Sections</span>
+            <button
+              type="button"
+              className="icon-btn tiny"
+              aria-label="New section"
+              title="New section"
+              onClick={() => setAddingSidebarSection((v) => !v)}
+            >
+              +
+            </button>
+          </div>
 
-      {searching ? (
-        <SectionBlock title={`Search results (${searchHits.length})`}>
-          {searchHits.length === 0 ? (
-            <p className="muted center-text">No notes or reminders match that.</p>
-          ) : (
-            <ul className="notes">
-              {searchHits.map((n) => {
-                const sec = n.sectionId ? (sectionMap.get(n.sectionId) ?? null) : null;
-                return isReminderItem(n)
-                  ? renderReminderCard(n, sec)
-                  : renderNoteCard(n, sec);
-              })}
-            </ul>
-          )}
-        </SectionBlock>
-      ) : activeSectionId !== null ? (
-        /* ---- INSIDE A SECTION FOLDER VIEW ---- */
-        <SectionFolderContent
-          allNotes={all}
-          sectionId={targetSectionId}
-          sectionName={activeSectionObj ? activeSectionObj.name : "General"}
-          renderReminderCard={(n) => renderReminderCard(n, null)}
-          renderNoteCard={(n) => renderNoteCard(n, null)}
-        />
-      ) : (
-        /* ---- HOME SCREEN VIEW ---- */
-        <>
-          {/* Due now alert section at top of Home if any reminders are currently due */}
-          {homeSections.due.length > 0 && (
-            <SectionBlock title="Due now" tone="due">
-              <ul className="notes">
-                {homeSections.due.map((n) =>
-                  renderReminderCard(
-                    n,
-                    n.sectionId ? (sectionMap.get(n.sectionId) ?? null) : null,
-                  ),
-                )}
-              </ul>
-            </SectionBlock>
-          )}
-
-          {/* Sections (Folders) management & navigation */}
-          <section className="sections-panel" aria-label="Sections">
-            <div className="sections-panel-header">
-              <div>
-                <h2 className="sections-heading">📁 Sections</h2>
-                <p className="muted small sections-sub">
-                  Create named sections and click a section title to open its folder.
-                </p>
-              </div>
-            </div>
-
-            <form className="section-create-form" onSubmit={handleCreateSection}>
+          {addingSidebarSection && (
+            <form className="sidebar-new-section" onSubmit={handleSidebarCreateSection}>
               <input
-                value={newSectionName}
-                onChange={(e) => setNewSectionName(e.target.value)}
-                placeholder="New section title (e.g. Work, Personal, Shopping)…"
+                autoFocus
+                value={sidebarSectionName}
+                onChange={(e) => setSidebarSectionName(e.target.value)}
+                placeholder="Section name…"
                 maxLength={LIMITS.sectionNameChars}
                 aria-label="New section name"
               />
-              <button
-                type="submit"
-                className="primary"
-                disabled={!newSectionName.trim()}
-              >
-                + Create Section
-              </button>
             </form>
+          )}
 
-            {userSections.length === 0 && generalCounts.notes + generalCounts.reminders === 0 ? (
-              <p className="muted small center-text sections-empty">
-                No sections yet. Create a section above to organise your notes and reminders into folders.
-              </p>
-            ) : (
-              <div className="section-folders-grid">
-                {userSections.map((sec) => {
-                  const counts = sectionCounts(all, sec.id, now);
-                  const isRenaming = renamingSectionId === sec.id;
-                  return (
-                    <div key={sec.id} className="section-folder-card">
-                      {isRenaming ? (
-                        <div className="inline-rename">
-                          <input
-                            autoFocus
-                            value={renameSectionValue}
-                            onChange={(e) => setRenameSectionValue(e.target.value)}
-                            aria-label="Rename section"
-                          />
-                          <button
-                            type="button"
-                            className="small-btn primary"
-                            onClick={() => handleSaveRenameSection(sec.id)}
-                          >
-                            Save
-                          </button>
-                          <button
-                            type="button"
-                            className="small-btn"
-                            onClick={() => setRenamingSectionId(null)}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className="section-folder-link"
-                            onClick={() => setActiveSectionId(sec.id)}
-                          >
-                            <span className="section-folder-title">
-                              📁 {sec.name}
-                            </span>
-                            <span className="section-folder-counts">
-                              {counts.notes} {counts.notes === 1 ? "note" : "notes"} ·{" "}
-                              {counts.reminders}{" "}
-                              {counts.reminders === 1 ? "reminder" : "reminders"}
-                              {counts.due > 0 ? ` · ${counts.due} due` : ""}
-                            </span>
-                          </button>
-                          <div className="section-folder-actions">
-                            <button
-                              type="button"
-                              className="icon"
-                              aria-label={`Rename ${sec.name}`}
-                              title="Rename section"
-                              onClick={() => {
-                                setRenamingSectionId(sec.id);
-                                setRenameSectionValue(sec.name);
-                              }}
-                            >
-                              ✏️
-                            </button>
-                            <button
-                              type="button"
-                              className="icon"
-                              aria-label={`Delete ${sec.name}`}
-                              title="Delete section"
-                              onClick={() => handleDeleteSection(sec)}
-                            >
-                              🗑️
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
+          <nav className="sidebar-nav">
+            {userSections.map((sec) => {
+              const c = sectionCounts(all, sec.id, now);
+              const active = activeSectionId === sec.id;
+              return (
+                <button
+                  key={sec.id}
+                  type="button"
+                  className={"nav-item" + (active ? " active" : "")}
+                  onClick={() => goTo(sec.id)}
+                >
+                  <span className="nav-icon">📁</span>
+                  <span className="nav-label">{sec.name}</span>
+                  {c.due > 0 ? (
+                    <span className="nav-count due">{c.due}</span>
+                  ) : c.notes + c.reminders > 0 ? (
+                    <span className="nav-count">{c.notes + c.reminders}</span>
+                  ) : null}
+                </button>
+              );
+            })}
+            {(generalCounts.notes > 0 || generalCounts.reminders > 0) && (
+              <button
+                type="button"
+                className={
+                  "nav-item" + (activeSectionId === GENERAL_SECTION_ID ? " active" : "")
+                }
+                onClick={() => goTo(GENERAL_SECTION_ID)}
+              >
+                <span className="nav-icon">🗂️</span>
+                <span className="nav-label">General</span>
+                <span className="nav-count">
+                  {generalCounts.notes + generalCounts.reminders}
+                </span>
+              </button>
+            )}
+            {userSections.length === 0 && generalCounts.notes + generalCounts.reminders === 0 && (
+              <p className="sidebar-hint">Create a section to organise your items.</p>
+            )}
+          </nav>
+        </div>
 
-                {(generalCounts.notes > 0 || generalCounts.reminders > 0) && (
-                  <div className="section-folder-card general-folder">
-                    <button
-                      type="button"
-                      className="section-folder-link"
-                      onClick={() => setActiveSectionId(GENERAL_SECTION_ID)}
-                    >
-                      <span className="section-folder-title">
-                        🗂️ General (Unsectioned)
-                      </span>
-                      <span className="section-folder-counts">
-                        {generalCounts.notes}{" "}
-                        {generalCounts.notes === 1 ? "note" : "notes"} ·{" "}
-                        {generalCounts.reminders}{" "}
-                        {generalCounts.reminders === 1 ? "reminder" : "reminders"}
-                      </span>
-                    </button>
-                  </div>
-                )}
+        <div className="sidebar-foot">
+          <button
+            type="button"
+            className="nav-item"
+            onClick={() => {
+              setSettings(true);
+              setNavOpen(false);
+            }}
+          >
+            <span className="nav-icon">⚙️</span>
+            <span className="nav-label">Settings</span>
+          </button>
+        </div>
+      </aside>
+      {navOpen && (
+        <div className="scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />
+      )}
+
+      {/* ---- Main column: topbar + page ---- */}
+      <main className="main">
+        <div className="topbar">
+          <button
+            type="button"
+            className="icon-btn menu-btn"
+            aria-label="Open menu"
+            onClick={() => setNavOpen(true)}
+          >
+            ☰
+          </button>
+          <nav className="breadcrumb" aria-label="Breadcrumb">
+            <button type="button" className="crumb" onClick={() => goTo(null)}>
+              Home
+            </button>
+            {activeSectionId !== null && (
+              <>
+                <span className="crumb-sep">/</span>
+                <span className="crumb current">{pageTitle}</span>
+              </>
+            )}
+          </nav>
+          <div className="topbar-search">
+            <span className="search-icon" aria-hidden="true">🔍</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={
+                activeSectionId
+                  ? `Search ${pageTitle}…`
+                  : "Search notes & reminders…"
+              }
+              aria-label="Search notes"
+            />
+          </div>
+          <button
+            className={"pill sync " + manager.phase}
+            title="Tap to sync now"
+            onClick={() => void manager.syncOnce()}
+          >
+            <span className="pill-dot" aria-hidden="true" />
+            {status}
+          </button>
+        </div>
+
+        <div className="page">
+          <header className="page-header">
+            <div className="page-icon" aria-hidden="true">
+              {pageIcon}
+            </div>
+            <div className="page-title-block">
+              {renamingSectionId === activeSectionId && activeSectionObj ? (
+                <div className="inline-rename">
+                  <input
+                    autoFocus
+                    value={renameSectionValue}
+                    onChange={(e) => setRenameSectionValue(e.target.value)}
+                    aria-label="Section name"
+                  />
+                  <button
+                    type="button"
+                    className="small-btn primary"
+                    onClick={() => handleSaveRenameSection(activeSectionObj.id)}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="small-btn"
+                    onClick={() => setRenamingSectionId(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <h1 className="page-title">{pageTitle}</h1>
+                  <p className="page-sub">{pageSub}</p>
+                </>
+              )}
+            </div>
+            {activeSectionObj && renamingSectionId !== activeSectionObj.id && (
+              <div className="page-actions">
+                <button
+                  type="button"
+                  className="small-btn"
+                  onClick={() => {
+                    setRenamingSectionId(activeSectionObj.id);
+                    setRenameSectionValue(activeSectionObj.name);
+                  }}
+                >
+                  ✏️ Rename
+                </button>
+                <button
+                  type="button"
+                  className="small-btn danger-outline"
+                  onClick={() => handleDeleteSection(activeSectionObj)}
+                >
+                  🗑️ Delete
+                </button>
               </div>
             )}
-          </section>
+          </header>
 
-          {/* Home Screen Reminders Calendar with Colour Coding & Colour Filtering */}
-          <ReminderCalendar
-            notes={all}
-            sections={userSections}
-            now={now}
-            colorFilter={colorFilter}
-            onColorFilterChange={setColorFilter}
-            onSelectSection={(secId) => setActiveSectionId(secId)}
-            onQuickAddReminderForDate={openReminderComposerForDate}
-            renderReminderCard={renderReminderCard}
-          />
-        </>
-      )}
+          {!isInstalled() &&
+            canPromptInstall() &&
+            !localStorage.getItem(DISMISS_INSTALL_KEY) && <InstallBanner />}
+
+          {/* Two buttons to choose Note vs Reminder creation */}
+          <div className="creator-shell" ref={composerRef}>
+            <div className="creator-switcher" role="tablist" aria-label="Choose what to create">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={composerKind === "note"}
+                className={
+                  "creator-mode-btn" + (composerKind === "note" ? " active" : "")
+                }
+                onClick={() => {
+                  setComposerKind("note");
+                  setComposerPreselectAt(null);
+                }}
+              >
+                📝 New Note
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={composerKind === "reminder"}
+                className={
+                  "creator-mode-btn" + (composerKind === "reminder" ? " active" : "")
+                }
+                onClick={() => setComposerKind("reminder")}
+              >
+                ⏰ New Reminder
+              </button>
+            </div>
+
+            {composerKind === "note" ? (
+              <NoteComposer
+                key={`note-${composerKey}-${activeSectionId ?? "home"}`}
+                defaultSectionId={targetSectionId}
+                sections={userSections}
+                manager={manager}
+              />
+            ) : (
+              <ReminderComposer
+                key={`rem-${composerKey}-${activeSectionId ?? "home"}`}
+                defaultSectionId={targetSectionId}
+                initialAt={composerPreselectAt}
+                initialColor={composerPreselectColor}
+                sections={userSections}
+                manager={manager}
+              />
+            )}
+          </div>
+
+          {searching ? (
+            <SectionBlock title={`Search results (${searchHits.length})`}>
+              {searchHits.length === 0 ? (
+                <p className="muted center-text">No notes or reminders match that.</p>
+              ) : (
+                <ul className="notes">
+                  {searchHits.map((n) => {
+                    const sec = n.sectionId ? (sectionMap.get(n.sectionId) ?? null) : null;
+                    return isReminderItem(n)
+                      ? renderReminderCard(n, sec)
+                      : renderNoteCard(n, sec);
+                  })}
+                </ul>
+              )}
+            </SectionBlock>
+          ) : activeSectionId !== null ? (
+            /* ---- INSIDE A SECTION FOLDER VIEW ---- */
+            <SectionFolderContent
+              allNotes={all}
+              sectionId={targetSectionId}
+              sectionName={activeSectionObj ? activeSectionObj.name : "General"}
+              renderReminderCard={(n) => renderReminderCard(n, null)}
+              renderNoteCard={(n) => renderNoteCard(n, null)}
+            />
+          ) : (
+            /* ---- HOME VIEW ---- */
+            <>
+              {homeSections.due.length > 0 && (
+                <SectionBlock title="Due now" tone="due" id="due">
+                  <ul className="notes">
+                    {homeSections.due.map((n) =>
+                      renderReminderCard(
+                        n,
+                        n.sectionId ? (sectionMap.get(n.sectionId) ?? null) : null,
+                      ),
+                    )}
+                  </ul>
+                </SectionBlock>
+              )}
+
+              {/* Sections (Folders) gallery */}
+              <section className="sections-panel" aria-label="Sections">
+                <div className="block-head">
+                  <h2 className="block-title">Sections</h2>
+                  <p className="muted small">
+                    Click a section to open its folder.
+                  </p>
+                </div>
+
+                <form className="section-create-form" onSubmit={handleCreateSection}>
+                  <input
+                    value={newSectionName}
+                    onChange={(e) => setNewSectionName(e.target.value)}
+                    placeholder="New section, e.g. Work, Personal, Shopping…"
+                    maxLength={LIMITS.sectionNameChars}
+                    aria-label="New section name"
+                  />
+                  <button type="submit" className="primary" disabled={!newSectionName.trim()}>
+                    + Create section
+                  </button>
+                </form>
+
+                {userSections.length === 0 && generalCounts.notes + generalCounts.reminders === 0 ? (
+                  <p className="muted small center-text sections-empty">
+                    No sections yet. Create one above to organise your notes and reminders into folders.
+                  </p>
+                ) : (
+                  <div className="section-folders-grid">
+                    {userSections.map((sec) => {
+                      const counts = sectionCounts(all, sec.id, now);
+                      const isRenaming = renamingSectionId === sec.id;
+                      return (
+                        <div key={sec.id} className="section-folder-card">
+                          {isRenaming ? (
+                            <div className="inline-rename">
+                              <input
+                                autoFocus
+                                value={renameSectionValue}
+                                onChange={(e) => setRenameSectionValue(e.target.value)}
+                                aria-label="Rename section"
+                              />
+                              <button
+                                type="button"
+                                className="small-btn primary"
+                                onClick={() => handleSaveRenameSection(sec.id)}
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                className="small-btn"
+                                onClick={() => setRenamingSectionId(null)}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="section-folder-link"
+                                onClick={() => goTo(sec.id)}
+                              >
+                                <span className="section-folder-icon" aria-hidden="true">📁</span>
+                                <span className="section-folder-title">{sec.name}</span>
+                                <span className="section-folder-counts">
+                                  {counts.notes} {counts.notes === 1 ? "note" : "notes"} ·{" "}
+                                  {counts.reminders}{" "}
+                                  {counts.reminders === 1 ? "reminder" : "reminders"}
+                                  {counts.due > 0 ? ` · ${counts.due} due` : ""}
+                                </span>
+                              </button>
+                              <div className="section-folder-actions">
+                                <button
+                                  type="button"
+                                  className="icon-btn"
+                                  aria-label={`Rename ${sec.name}`}
+                                  title="Rename section"
+                                  onClick={() => {
+                                    setRenamingSectionId(sec.id);
+                                    setRenameSectionValue(sec.name);
+                                  }}
+                                >
+                                  ✏️
+                                </button>
+                                <button
+                                  type="button"
+                                  className="icon-btn"
+                                  aria-label={`Delete ${sec.name}`}
+                                  title="Delete section"
+                                  onClick={() => handleDeleteSection(sec)}
+                                >
+                                  🗑️
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {(generalCounts.notes > 0 || generalCounts.reminders > 0) && (
+                      <div className="section-folder-card general-folder">
+                        <button
+                          type="button"
+                          className="section-folder-link"
+                          onClick={() => goTo(GENERAL_SECTION_ID)}
+                        >
+                          <span className="section-folder-icon" aria-hidden="true">🗂️</span>
+                          <span className="section-folder-title">General (unsectioned)</span>
+                          <span className="section-folder-counts">
+                            {generalCounts.notes}{" "}
+                            {generalCounts.notes === 1 ? "note" : "notes"} ·{" "}
+                            {generalCounts.reminders}{" "}
+                            {generalCounts.reminders === 1 ? "reminder" : "reminders"}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+
+              {/* Reminders calendar with colour coding & filtering */}
+              <div id="calendar">
+                <ReminderCalendar
+                  notes={all}
+                  sections={userSections}
+                  now={now}
+                  colorFilter={colorFilter}
+                  onColorFilterChange={setColorFilter}
+                  onSelectSection={(secId) => goTo(secId)}
+                  onQuickAddReminderForDate={openReminderComposerForDate}
+                  renderReminderCard={renderReminderCard}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </main>
 
       {/* Full Interactive Note Modal ("interact further") */}
       {expandedNote && (
@@ -956,6 +1148,7 @@ function ReminderComposer({
   const [rem, setRem] = useState<ReminderValue>(() => ({
     at: initialAt ?? quickReminders(Date.now())[1].at,
     error: null,
+    repeat: "none",
   }));
 
   const now = Date.now();
@@ -982,6 +1175,7 @@ function ReminderComposer({
             reminderAt: rem.at!,
             color,
             sectionId,
+            repeat: rem.repeat,
           },
           Date.now(),
         ).state,
@@ -990,7 +1184,7 @@ function ReminderComposer({
     setBody("");
     setLocation("");
     const nextDefault = quickReminders(Date.now())[1].at;
-    setRem({ at: nextDefault, error: null });
+    setRem({ at: nextDefault, error: null, repeat: "none" });
     setPickerKey((k) => k + 1);
   }
 
@@ -1236,12 +1430,14 @@ function ReminderCard({
         {note.reminderAt != null && (
           <button
             className="icon"
-            aria-label="Mark done and clear reminder"
-            title="Done — clears the reminder"
+            aria-label="Mark done"
+            title={
+              note.repeat && note.repeat !== "none"
+                ? "Done — moves to the next repeat"
+                : "Done — clears the reminder"
+            }
             onClick={() =>
-              manager.mutate((s) =>
-                updateItem(s, note.id, { reminderAt: null }, Date.now()),
-              )
+              manager.mutate((s) => markReminderDone(s, note.id, Date.now()))
             }
           >
             ✅
@@ -1672,6 +1868,7 @@ function EditItemRow({
   const [rem, setRem] = useState<ReminderValue>({
     at: note.reminderAt,
     error: null,
+    repeat: note.reminderAt != null ? (note.repeat ?? "none") : "none",
   });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1703,6 +1900,7 @@ function EditItemRow({
           color: isRem ? color : null,
           images: isRem ? [] : images,
           reminderAt: isRem ? rem.at : null,
+          repeat: isRem && rem.at != null ? rem.repeat : null,
         },
         Date.now(),
       ),
@@ -1774,7 +1972,11 @@ function EditItemRow({
               </button>
             ))}
           </div>
-          <ReminderPicker initial={note.reminderAt} onChange={setRem} />
+          <ReminderPicker
+            initial={note.reminderAt}
+            initialRepeat={note.repeat ?? "none"}
+            onChange={setRem}
+          />
           {rem.error && <p className="err small">{rem.error}</p>}
         </>
       ) : (
@@ -1830,15 +2032,17 @@ function EditItemRow({
 function SectionBlock({
   title,
   tone,
+  id,
   children,
 }: {
   title: string;
   tone?: "due";
+  id?: string;
   children: ReactNode;
 }) {
   return (
-    <section className={"section " + (tone ?? "")}>
-      <h2 className="section-title">{title}</h2>
+    <section className={"section " + (tone ?? "")} id={id}>
+      <h2 className="block-title">{title}</h2>
       {children}
     </section>
   );
