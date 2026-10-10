@@ -87,6 +87,34 @@ export function getReminderColor(color?: ReminderColorId | null): ReminderColorD
   return REMINDER_COLORS.find((c) => c.id === color) ?? REMINDER_COLORS[1];
 }
 
+/** How a reminder repeats after its time. "none" = one-off. */
+export type RepeatId =
+  | "none"
+  | "daily"
+  | "weekdays"
+  | "weekly"
+  | "biweekly"
+  | "monthly"
+  | "yearly";
+
+export const REPEAT_OPTIONS: readonly { id: RepeatId; label: string; short: string }[] = [
+  { id: "none", label: "Does not repeat", short: "" },
+  { id: "daily", label: "Every day", short: "Daily" },
+  { id: "weekdays", label: "Every weekday (Mon–Fri)", short: "Weekdays" },
+  { id: "weekly", label: "Every week", short: "Weekly" },
+  { id: "biweekly", label: "Every 2 weeks", short: "Every 2 weeks" },
+  { id: "monthly", label: "Every month", short: "Monthly" },
+  { id: "yearly", label: "Every year", short: "Yearly" },
+] as const;
+
+export function isValidRepeat(r: unknown): r is RepeatId {
+  return typeof r === "string" && REPEAT_OPTIONS.some((o) => o.id === r);
+}
+
+export function repeatLabel(r?: RepeatId | null): string {
+  return REPEAT_OPTIONS.find((o) => o.id === r)?.short ?? "";
+}
+
 export interface ChecklistItem {
   id: string;
   text: string;
@@ -126,6 +154,8 @@ export interface Note {
   updatedAt: number;
   /** Epoch ms of a scheduled reminder, or null when the note has none. */
   reminderAt: number | null;
+  /** How the reminder repeats (only meaningful when reminderAt is set). */
+  repeat?: RepeatId | null;
   deleted: boolean;
 }
 
@@ -148,6 +178,7 @@ export interface Op {
   pinned?: boolean;
   sectionName?: string;
   reminderAt?: number | null;
+  repeat?: RepeatId | null;
   createdAt?: number;
   /** Last-writer-wins timestamp. */
   updatedAt: number;
@@ -246,6 +277,9 @@ export function validateOp(op: Op): string | null {
     }
     if (op.color != null && !isValidReminderColor(op.color)) {
       return "op.color invalid";
+    }
+    if (op.repeat != null && !isValidRepeat(op.repeat)) {
+      return "op.repeat invalid";
     }
     if (op.images !== undefined) {
       if (!Array.isArray(op.images) || op.images.length > LIMITS.maxImagesPerNote) {

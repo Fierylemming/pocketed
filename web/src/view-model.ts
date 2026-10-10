@@ -3,6 +3,7 @@ import {
   formatReminderLabel,
   isReminderItem,
   REMINDER_COLORS,
+  repeatLabel,
   sortNotes,
   visibleSections,
   type Note,
@@ -159,5 +160,6 @@ export function syncStatus(
 
 export function reminderMeta(note: Note, now: number): string | null {
   if (note.reminderAt == null) return null;
-  return "⏰ " + formatReminderLabel(note.reminderAt, now);
+  const rep = repeatLabel(note.repeat);
+  return "⏰ " + formatReminderLabel(note.reminderAt, now) + (rep ? ` · 🔁 ${rep}` : "");
 }

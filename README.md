@@ -47,6 +47,14 @@ In development the site already points at the local API, so you only type a pass
 
 On iPhone: Safari → Share → **Add to Home Screen**.
 
+## Interface
+
+- Notion-style workspace: a sidebar with Home, Calendar, Due now and your sections, a top bar with search
+  and sync status, and pages that use the full width of the screen. Light and dark themes follow your system.
+- **Scaling**: the layout is sized from the screen's short side, so phones (portrait or landscape) fit correctly
+  and small phones shrink the UI instead of overflowing. On phones the sidebar opens from the ☰ button.
+  ⚙️ Settings → **Text size** makes everything smaller or larger.
+
 ## Features: Sections, Notes & Reminders Calendar
 
 - **Sections (Folders)** — create named sections on the home screen and click any section title to open its dedicated folder view.
@@ -59,7 +67,10 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 
 - Reminders are set from the composer or while editing a note: quick picks
   (15 min, 1 hour, 3 hours, tomorrow 9:00) or an exact date and time. A time in the past is refused.
-- ✅ on a note clears its reminder without deleting the note.
+- **Repeating reminders**: pick **🔁 Repeat** next to a reminder's time: every day, every weekday (Mon–Fri),
+  every week, every 2 weeks, every month or every year. Repeats appear on every matching day in the calendar.
+  ✅ on a repeating reminder moves it to its next occurrence; a repeating alert moves it on automatically.
+- ✅ on a one-off note clears its reminder without deleting the note.
 - Due reminders appear under **Due now** at the top, whether or not an alert fired.
 - **Alerts fire while the app is running** — an open tab, or the installed app in the background.
   If the app is fully closed when a reminder comes due, you'll see it under **Due now** the next time you open it.

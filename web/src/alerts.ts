@@ -56,7 +56,14 @@ export async function showAlert(title: string, body: string, tag: string): Promi
 export class ReminderWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private notes: () => Note[]) {}
+  /**
+   * @param onFired called once per alert, after it is shown. Used to roll
+   * repeating reminders forward to their next occurrence.
+   */
+  constructor(
+    private notes: () => Note[],
+    private onFired?: (n: Note) => void,
+  ) {}
 
   start(): void {
     this.tick();
@@ -83,6 +90,7 @@ export class ReminderWatcher {
       const title = itemTitle(n) || "Reminder";
       const body = n.location ? `${title} · 📍 ${n.location}` : title;
       void showAlert("⏰ Reminder", body, `${n.id}:${n.reminderAt}`);
+      this.onFired?.(n);
     }
   }
 }

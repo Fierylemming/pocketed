@@ -7,6 +7,7 @@ import type {
   ItemKind,
   Note,
   Op,
+  RepeatId,
   ReminderColorId,
   Section,
 } from "@pocketed/shared";
@@ -28,6 +29,7 @@ interface StoredMeta {
   checklist?: ChecklistItem[];
   pinned?: boolean;
   sectionName?: string;
+  repeat?: RepeatId | null;
 }
 
 function encodeMeta(op: Op): string | null {
@@ -42,6 +44,7 @@ function encodeMeta(op: Op): string | null {
   if (op.checklist !== undefined) m.checklist = op.checklist;
   if (op.pinned !== undefined) m.pinned = op.pinned;
   if (op.sectionName !== undefined) m.sectionName = op.sectionName;
+  if (op.repeat !== undefined) m.repeat = op.repeat;
   return Object.keys(m).length > 0 ? JSON.stringify(m) : null;
 }
 
@@ -279,6 +282,7 @@ export class D1Store implements Store {
         createdAt: r.createdAt as number,
         updatedAt: r.updatedAt as number,
         reminderAt: (r.reminderAt as number) ?? null,
+        repeat: (r.reminderAt as number) == null ? null : (m.repeat ?? "none"),
         deleted: (r.deleted as number) === 1,
       };
     });
@@ -410,6 +414,10 @@ export class MemoryStore implements Store {
         createdAt: op.createdAt ?? cur?.createdAt ?? op.updatedAt,
         updatedAt: op.updatedAt,
         reminderAt: op.reminderAt ?? null,
+        repeat:
+          op.reminderAt == null
+            ? null
+            : (op.repeat !== undefined ? op.repeat : (cur?.repeat ?? "none")),
         deleted: false,
       });
     }

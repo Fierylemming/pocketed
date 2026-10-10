@@ -10,9 +10,11 @@ import {
   type ItemKind,
   type Note,
   type Op,
+  type RepeatId,
   type ReminderColorId,
   type Section,
 } from "./protocol";
+import { reminderAfterDone } from "./reminders";
 
 export interface SyncState {
   notes: Record<string, Note>;
@@ -33,6 +35,7 @@ export interface ItemExtraFields {
   images?: string[];
   checklist?: ChecklistItem[];
   pinned?: boolean;
+  repeat?: RepeatId | null;
 }
 
 export interface CreateNoteInput {
@@ -51,6 +54,7 @@ export interface CreateReminderInput {
   reminderAt: number;
   color?: ReminderColorId | null;
   sectionId?: string | null;
+  repeat?: RepeatId | null;
 }
 
 export const emptyState = (): SyncState => ({
@@ -102,6 +106,7 @@ export function addNote(
     createdAt: now,
     updatedAt: now,
     reminderAt,
+    repeat: reminderAt != null ? (extra?.repeat ?? "none") : null,
     deleted: false,
   };
   const op: Op = {
@@ -119,6 +124,7 @@ export function addNote(
     checklist: note.checklist,
     pinned: note.pinned,
     reminderAt,
+    repeat: note.repeat,
     createdAt: now,
     updatedAt: now,
   };
@@ -163,6 +169,7 @@ export function createReminderItem(
     sectionId: input.sectionId ?? null,
     location: input.location?.trim() || null,
     color: input.color ?? DEFAULT_REMINDER_COLOR,
+    repeat: input.repeat ?? "none",
   });
 }
 
@@ -176,10 +183,12 @@ export function editNote(
 ): SyncState {
   const prev = state.notes[id];
   if (!prev || prev.deleted) return state;
+  const repeatRaw = extra?.repeat !== undefined ? extra.repeat : prev.repeat;
   const note: Note = {
     ...prev,
     text,
     reminderAt,
+    repeat: reminderAt != null ? (repeatRaw ?? "none") : null,
     kind: extra?.kind ?? prev.kind,
     title: extra?.title !== undefined ? extra.title : prev.title,
     body: extra?.body !== undefined ? extra.body : prev.body,
@@ -206,6 +215,7 @@ export function editNote(
     checklist: note.checklist,
     pinned: note.pinned,
     reminderAt: note.reminderAt,
+    repeat: note.repeat,
     createdAt: note.createdAt,
     updatedAt: now,
   };
@@ -241,13 +251,25 @@ export function updateItem(
     images: patch.images !== undefined ? patch.images : prev.images,
     checklist: patch.checklist !== undefined ? patch.checklist : prev.checklist,
     pinned: patch.pinned !== undefined ? patch.pinned : prev.pinned,
+    repeat: patch.repeat !== undefined ? patch.repeat : prev.repeat,
   });
+}
+
+/**
+ * Marks a reminder's current occurrence as done. A repeating reminder rolls
+ * forward to its next time; a one-off reminder is cleared (the note is kept).
+ */
+export function markReminderDone(state: SyncState, id: string, now: number): SyncState {
+  const prev = state.notes[id];
+  if (!prev || prev.deleted || prev.reminderAt == null) return state;
+  const next = reminderAfterDone(prev.reminderAt, prev.repeat, now);
+  return updateItem(state, id, { reminderAt: next, repeat: next == null ? null : prev.repeat }, now);
 }
 
 export function deleteNote(state: SyncState, id: string, now: number): SyncState {
   const prev = state.notes[id];
   if (!prev) return state;
-  const note: Note = { ...prev, deleted: true, reminderAt: null, updatedAt: now };
+  const note: Note = { ...prev, deleted: true, reminderAt: null, repeat: null, updatedAt: now };
   const op: Op = { id: uid(), kind: "delete", noteId: id, updatedAt: now };
   return pushOp({ ...state, notes: { ...state.notes, [id]: note } }, op);
 }
@@ -399,6 +421,10 @@ export function applyRemote(state: SyncState, ops: Op[]): SyncState {
         createdAt: op.createdAt ?? cur?.createdAt ?? op.updatedAt,
         updatedAt: op.updatedAt,
         reminderAt: op.reminderAt ?? null,
+        repeat:
+          op.reminderAt == null
+            ? null
+            : (op.repeat !== undefined ? op.repeat : (cur?.repeat ?? "none")),
         deleted: false,
       };
     }
