@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Note } from "@pocketed/shared";
 import {
+  colorPickerChoices,
+  extraReminderColors,
   itemsInSection,
   matchesQuery,
   reminderColorCounts,
@@ -38,6 +40,12 @@ describe("reminderMeta", () => {
     const n = mk("call mum", { reminderAt: NOW + 3_600_000 });
     expect(reminderMeta(n, NOW)).toMatch(/⏰/);
     expect(reminderMeta({ ...n, reminderAt: null }, NOW)).toBeNull();
+  });
+
+  it("mentions an early alert (imported calendar events)", () => {
+    const n = mk("dentist", { reminderAt: NOW + 3_600_000, alertBefore: 30 });
+    expect(reminderMeta(n, NOW)).toMatch(/🔔 30 min before$/);
+    expect(reminderMeta({ ...n, alertBefore: null }, NOW)).not.toMatch(/🔔/);
   });
 });
 
@@ -105,5 +113,49 @@ describe("matchesQuery", () => {
     expect(matchesQuery(n, "downtown")).toBe(true);
     expect(matchesQuery(n, "expiry")).toBe(true);
     expect(matchesQuery(n, "eggs")).toBe(false);
+  });
+});
+
+describe("exact Google colours", () => {
+  const list = [
+    mk("a", { reminderAt: NOW, color: "#0b8043" }),
+    mk("b", { reminderAt: NOW, color: "#d50000" }),
+    mk("c", { reminderAt: NOW, color: "#123456" }),
+    mk("d", { reminderAt: NOW, color: "#d50000" }),
+    mk("e", { reminderAt: NOW, color: "sky" }),
+    mk("f", { reminderAt: NOW, color: "#7986cb", deleted: true }),
+    mk("g", { color: "#7986cb" }), // a note, not a reminder
+  ];
+
+  it("are counted next to the six named colours", () => {
+    const counts = reminderColorCounts(list);
+    expect(counts.all).toBe(5);
+    expect(counts["#d50000"]).toBe(2);
+    expect(counts["#0b8043"]).toBe(1);
+    expect(counts.sky).toBe(1);
+    expect(counts.ruby).toBe(0);
+    expect(counts["#7986cb"]).toBeUndefined();
+  });
+
+  it("become extra filter chips in Google's order, with Google's names", () => {
+    expect(extraReminderColors(list).map((c) => [c.id, c.label])).toEqual([
+      ["#d50000", "Tomato"],
+      ["#0b8043", "Basil"],
+      ["#123456", "Custom"],
+    ]);
+  });
+
+  it("stay selectable when editing", () => {
+    expect(colorPickerChoices("#d50000").map((c) => c.id)).toEqual([
+      "#d50000",
+      "ruby",
+      "amber",
+      "emerald",
+      "sky",
+      "violet",
+      "rose",
+    ]);
+    expect(colorPickerChoices("sky")).toHaveLength(6);
+    expect(colorPickerChoices(null)).toHaveLength(6);
   });
 });

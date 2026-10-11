@@ -50,7 +50,9 @@ async function networkFirst(req) {
   const cache = await caches.open(SHELL_CACHE);
   try {
     const res = await fetch(req);
-    if (res.ok) cache.put("/index.html", res.clone());
+    // Only the app itself is the offline start page (not e.g. /privacy.html).
+    const path = new URL(req.url).pathname;
+    if (res.ok && (path === "/" || path === "/index.html")) cache.put("/index.html", res.clone());
     return res;
   } catch {
     return (await cache.match(req)) || (await cache.match("/index.html")) || Response.error();

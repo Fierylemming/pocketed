@@ -5,7 +5,13 @@
 // while the app is fully closed are still shown the next time it opens, in
 // the "Due" section. True closed-app push needs a Web Push server (see README).
 
-import { itemTitle, remindersDueBetween, type Note } from "@pocketed/shared";
+import {
+  earlyAlertsDueBetween,
+  formatLeadTime,
+  itemTitle,
+  remindersDueBetween,
+  type Note,
+} from "@pocketed/shared";
 
 export type AlertState = "unsupported" | "default" | "granted" | "denied";
 
@@ -86,10 +92,18 @@ export class ReminderWatcher {
     localStorage.setItem(CHECKED_KEY, String(now));
     if (!last || last > now) return; // first run, or the clock went backwards
     if (alertState() !== "granted") return;
-    for (const n of remindersDueBetween(this.notes(), last, now)) {
+    const notes = this.notes();
+    // Early heads-up (e.g. imported calendar events: 30 min before).
+    for (const { note: n, at, minutes } of earlyAlertsDueBetween(notes, last, now)) {
       const title = itemTitle(n) || "Reminder";
       const body = n.location ? `${title} · 📍 ${n.location}` : title;
-      void showAlert("⏰ Reminder", body, `${n.id}:${n.reminderAt}`);
+      void showAlert(`⏰ In ${formatLeadTime(minutes)}`, body, `${n.id}:early:${at}`);
+    }
+    for (const n of remindersDueBetween(notes, last, now)) {
+      const title = itemTitle(n) || "Reminder";
+      const body = n.location ? `${title} · 📍 ${n.location}` : title;
+      const heading = n.source === "gcal" ? "📅 Starting now" : "⏰ Reminder";
+      void showAlert(heading, body, `${n.id}:${n.reminderAt}`);
       this.onFired?.(n);
     }
   }

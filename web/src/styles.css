@@ -1262,3 +1262,9 @@ input[type="checkbox"] { width: auto; box-shadow: none; }
 @media (min-width: 1500px) {
   .calendar-cell { min-height: 8rem; }
 }
+
+/* ---- Google Calendar (Settings) ---- */
+.row-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.row-buttons button.danger { width: auto; }
+.calendar-steps { padding-left: 1.25rem; margin: 0.35rem 0 0.5rem; display: grid; gap: 0.2rem; }
+.source-badge { white-space: nowrap; }

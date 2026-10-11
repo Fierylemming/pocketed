@@ -3,3 +3,6 @@ export * from "./sync";
 export * from "./reminders";
 export * from "./widget-data";
 export * from "./auth";
+export * from "./calendar";
+export * from "./calendar-util";
+export * from "./google-calendar";

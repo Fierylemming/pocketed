@@ -21,7 +21,6 @@ import {
   LIMITS,
   markReminderDone,
   quickReminders,
-  REMINDER_COLORS,
   renameSection,
   shortAgo,
   uid,
@@ -35,6 +34,7 @@ import {
 import type { Config } from "../config";
 import type { SyncManager } from "../store";
 import { ReminderWatcher } from "../alerts";
+import { CalendarAutoImport } from "../calendar-import";
 import {
   canPromptInstall,
   isInstalled,
@@ -48,10 +48,12 @@ import {
   reminderMeta,
   rowsFor,
   sectionCounts,
+  colorPickerChoices,
   sectionsFor,
   syncStatus,
   userSectionsFor,
 } from "../view-model";
+import { hasGoogleReturn } from "../google-return";
 import { ReminderCalendar } from "./ReminderCalendar";
 import { ReminderPicker, type ReminderValue } from "./ReminderPicker";
 import { Settings } from "./Settings";
@@ -95,7 +97,8 @@ export function Notes({
 
   // Search, Settings, Editing, and Interactive Modals
   const [query, setQuery] = useState("");
-  const [settings, setSettings] = useState(false);
+  // Opened straight away when coming back from "Sign in with Google".
+  const [settings, setSettings] = useState(hasGoogleReturn);
   const [editing, setEditing] = useState<string | null>(null);
   const [expandedNoteId, setExpandedNoteId] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
@@ -122,6 +125,13 @@ export function Notes({
     );
     w.start();
     return () => w.stop();
+  }, [manager]);
+
+  // Keep Google Calendar events imported as reminders (when a calendar is linked).
+  useEffect(() => {
+    const c = new CalendarAutoImport(manager);
+    c.start();
+    return () => c.stop();
   }, [manager]);
 
   const now = Date.now();
@@ -823,6 +833,7 @@ export function Notes({
       {settings && (
         <Settings
           cfg={manager.cfg}
+          manager={manager}
           onClose={() => setSettings(false)}
           onNewCfg={onNewCfg}
         />
@@ -1319,7 +1330,7 @@ function ReminderComposer({
 
       {activeTab === "color" && (
         <div className="reminder-tab-panel color-picker-row" role="radiogroup" aria-label="Reminder colour">
-          {REMINDER_COLORS.map((c) => {
+          {colorPickerChoices(initialColor).map((c) => {
             const selected = color === c.id;
             return (
               <button
@@ -1402,6 +1413,14 @@ function ReminderCard({
         {note.location && (
           <span className="location-badge" title="Location">
             📍 {note.location}
+          </span>
+        )}
+        {note.source === "gcal" && (
+          <span
+            className="location-badge source-badge"
+            title="Imported from Google Calendar. Changes there update this reminder."
+          >
+            📅 Google Calendar
           </span>
         )}
         {sectionBadge && onOpenSection && (
@@ -1954,7 +1973,7 @@ function EditItemRow({
             aria-label="Edit location"
           />
           <div className="color-picker-row">
-            {REMINDER_COLORS.map((c) => (
+            {colorPickerChoices(note.color).map((c) => (
               <button
                 key={c.id}
                 type="button"

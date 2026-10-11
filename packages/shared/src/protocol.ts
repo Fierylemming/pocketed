@@ -11,11 +11,35 @@ export const LIMITS = {
   maxImageDataUrlChars: 800_000,
   opsPerPush: 500,
   opsPerPull: 1000,
+  /** Longest "alert me N minutes before" lead time: one week. */
+  alertBeforeMinutes: 7 * 24 * 60,
+  sourceRefChars: 200,
 } as const;
+
+/** Where an item came from. Missing/null = made by hand in Pocketed. */
+export type ItemSource = "gcal";
+
+export function isValidSource(s: unknown): s is ItemSource {
+  return s === "gcal";
+}
+
+/** Imported calendar events alert this many minutes before they start (and again at the start). */
+export const CALENDAR_ALERT_BEFORE_MINUTES = 30;
+/** Imported calendar events use this colour. */
+export const CALENDAR_REMINDER_COLOR: ReminderColorId = "sky";
 
 export type ItemKind = "note" | "reminder";
 
-export type ReminderColorId =
+/** A colour copied exactly from elsewhere (Google Calendar), as lowercase "#rrggbb". */
+export type HexColor = `#${string}`;
+
+/**
+ * A reminder's colour: one of Pocketed's six named colours, or an exact hex
+ * colour (imported events keep their Google Calendar colour).
+ */
+export type ReminderColorId = PaletteColorId | HexColor;
+
+export type PaletteColorId =
   | "ruby"
   | "amber"
   | "emerald"
@@ -79,11 +103,66 @@ export const REMINDER_COLORS: readonly ReminderColorDef[] = [
 
 export const DEFAULT_REMINDER_COLOR: ReminderColorId = "amber";
 
-export function isValidReminderColor(c: unknown): c is ReminderColorId {
-  return typeof c === "string" && REMINDER_COLORS.some((rc) => rc.id === c);
+const HEX_RE = /^#[0-9a-f]{6}$/;
+
+export function isHexColor(c: unknown): c is HexColor {
+  return typeof c === "string" && HEX_RE.test(c);
 }
 
+export function isValidReminderColor(c: unknown): c is ReminderColorId {
+  return typeof c === "string" && (REMINDER_COLORS.some((rc) => rc.id === c) || HEX_RE.test(c));
+}
+
+/**
+ * Google Calendar's colours as shown in its (modern) interface, by name. The
+ * API reports event colours by id ("1"-"11") and calendar colours in the
+ * classic palette, so both are translated to these exact values.
+ */
+export const GOOGLE_COLORS: readonly { name: string; hex: HexColor }[] = [
+  { name: "Tomato", hex: "#d50000" },
+  { name: "Flamingo", hex: "#e67c73" },
+  { name: "Tangerine", hex: "#f4511e" },
+  { name: "Banana", hex: "#f6bf26" },
+  { name: "Sage", hex: "#33b679" },
+  { name: "Basil", hex: "#0b8043" },
+  { name: "Peacock", hex: "#039be5" },
+  { name: "Blueberry", hex: "#3f51b5" },
+  { name: "Lavender", hex: "#7986cb" },
+  { name: "Grape", hex: "#8e24aa" },
+  { name: "Graphite", hex: "#616161" },
+  // calendar-only colours
+  { name: "Radicchio", hex: "#ad1457" },
+  { name: "Cherry Blossom", hex: "#d81b60" },
+  { name: "Pumpkin", hex: "#ef6c00" },
+  { name: "Mango", hex: "#f09300" },
+  { name: "Citron", hex: "#e4c441" },
+  { name: "Avocado", hex: "#c0ca33" },
+  { name: "Pistachio", hex: "#7cb342" },
+  { name: "Eucalyptus", hex: "#009688" },
+  { name: "Cobalt", hex: "#4285f4" },
+  { name: "Wisteria", hex: "#b39ddb" },
+  { name: "Amethyst", hex: "#9e69af" },
+  { name: "Cocoa", hex: "#795548" },
+  { name: "Birch", hex: "#a79b8e" },
+];
+
+function hexToRgba(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/** Display info for any reminder colour (named or exact hex). */
 export function getReminderColor(color?: ReminderColorId | null): ReminderColorDef {
+  if (isHexColor(color)) {
+    const named = GOOGLE_COLORS.find((g) => g.hex === color);
+    return {
+      id: color,
+      label: named?.name ?? "Custom",
+      hex: color,
+      bg: hexToRgba(color, 0.16),
+      border: color,
+    };
+  }
   return REMINDER_COLORS.find((c) => c.id === color) ?? REMINDER_COLORS[1];
 }
 
@@ -156,6 +235,12 @@ export interface Note {
   reminderAt: number | null;
   /** How the reminder repeats (only meaningful when reminderAt is set). */
   repeat?: RepeatId | null;
+  /** Extra early alert, in minutes before reminderAt (the main alert still fires at reminderAt). */
+  alertBefore?: number | null;
+  /** Set when the item was imported (e.g. from Google Calendar) rather than typed in. */
+  source?: ItemSource | null;
+  /** Importer bookkeeping: which version of the source event this was made from. */
+  sourceRef?: string | null;
   deleted: boolean;
 }
 
@@ -179,6 +264,9 @@ export interface Op {
   sectionName?: string;
   reminderAt?: number | null;
   repeat?: RepeatId | null;
+  alertBefore?: number | null;
+  source?: ItemSource | null;
+  sourceRef?: string | null;
   createdAt?: number;
   /** Last-writer-wins timestamp. */
   updatedAt: number;
@@ -280,6 +368,24 @@ export function validateOp(op: Op): string | null {
     }
     if (op.repeat != null && !isValidRepeat(op.repeat)) {
       return "op.repeat invalid";
+    }
+    if (
+      op.alertBefore != null &&
+      (typeof op.alertBefore !== "number" ||
+        !Number.isInteger(op.alertBefore) ||
+        op.alertBefore <= 0 ||
+        op.alertBefore > LIMITS.alertBeforeMinutes)
+    ) {
+      return "op.alertBefore invalid";
+    }
+    if (op.source != null && !isValidSource(op.source)) {
+      return "op.source invalid";
+    }
+    if (
+      op.sourceRef != null &&
+      (typeof op.sourceRef !== "string" || op.sourceRef.length > LIMITS.sourceRefChars)
+    ) {
+      return "op.sourceRef invalid";
     }
     if (op.images !== undefined) {
       if (!Array.isArray(op.images) || op.images.length > LIMITS.maxImagesPerNote) {

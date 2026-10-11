@@ -5,6 +5,7 @@
 import type {
   ChecklistItem,
   ItemKind,
+  ItemSource,
   Note,
   Op,
   RepeatId,
@@ -16,6 +17,27 @@ export interface AuthRow {
   salt: string;
   passHash: string;
   recoveryHash: string;
+}
+
+/** The connected calendar feed (one per Pocketed account). */
+export interface CalendarFeedRow {
+  /** Secret iCal address. Never sent back to the apps. */
+  url: string;
+  connectedAt: number;
+}
+
+/** "Sign in with Google" connection (one per Pocketed account). */
+export interface GoogleAccountRow {
+  /** Long-lived; never sent back to the apps. */
+  refreshToken: string;
+  accessToken: string | null;
+  /** Epoch ms when accessToken stops working. */
+  accessExpires: number | null;
+  /** Primary calendar id (the Google account's address), for display. */
+  email: string | null;
+  connectedAt: number;
+  /** Set when Google stopped accepting the refresh token (sign in again). */
+  problem: string | null;
 }
 
 interface StoredMeta {
@@ -30,6 +52,9 @@ interface StoredMeta {
   pinned?: boolean;
   sectionName?: string;
   repeat?: RepeatId | null;
+  alertBefore?: number | null;
+  source?: ItemSource | null;
+  sourceRef?: string | null;
 }
 
 function encodeMeta(op: Op): string | null {
@@ -45,6 +70,9 @@ function encodeMeta(op: Op): string | null {
   if (op.pinned !== undefined) m.pinned = op.pinned;
   if (op.sectionName !== undefined) m.sectionName = op.sectionName;
   if (op.repeat !== undefined) m.repeat = op.repeat;
+  if (op.alertBefore !== undefined) m.alertBefore = op.alertBefore;
+  if (op.source !== undefined) m.source = op.source;
+  if (op.sourceRef !== undefined) m.sourceRef = op.sourceRef;
   return Object.keys(m).length > 0 ? JSON.stringify(m) : null;
 }
 
@@ -69,6 +97,18 @@ export interface Store {
   allSections(): Promise<Section[]>;
   getAuth(): Promise<AuthRow | null>;
   setAuth(row: AuthRow): Promise<void>;
+  // ---- calendar link ----
+  getCalendar(): Promise<CalendarFeedRow | null>;
+  /** null disconnects. */
+  setCalendar(row: CalendarFeedRow | null): Promise<void>;
+  // ---- Sign in with Google ----
+  getGoogle(): Promise<GoogleAccountRow | null>;
+  /** null disconnects. */
+  setGoogle(row: GoogleAccountRow | null): Promise<void>;
+  /** Remembers a one-time sign-in attempt (and drops expired ones). */
+  putOAuthState(state: string, returnUrl: string, expires: number, now: number): Promise<void>;
+  /** Uses up a sign-in attempt: its return URL if it exists and hasn't expired. */
+  takeOAuthState(state: string, now: number): Promise<string | null>;
 }
 
 export const SCHEMA = `
@@ -105,7 +145,54 @@ CREATE TABLE IF NOT EXISTS auth (
   passHash TEXT NOT NULL,
   recoveryHash TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS calendar_feed (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  url TEXT NOT NULL,
+  connectedAt INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS google_account (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  refreshToken TEXT NOT NULL,
+  accessToken TEXT,
+  accessExpires INTEGER,
+  email TEXT,
+  connectedAt INTEGER NOT NULL,
+  problem TEXT
+);
+CREATE TABLE IF NOT EXISTS oauth_state (
+  state TEXT PRIMARY KEY,
+  returnUrl TEXT NOT NULL,
+  expires INTEGER NOT NULL
+);
 `;
+
+type NoteRow = Record<string, unknown>;
+
+function rowToNote(r: NoteRow): Note {
+  const m = decodeMeta(r.meta);
+  const reminderAt = (r.reminderAt as number) ?? null;
+  return {
+    id: r.id as string,
+    text: r.text as string,
+    kind: m.itemKind,
+    title: m.title,
+    body: m.body,
+    sectionId: m.sectionId ?? null,
+    location: m.location ?? null,
+    color: m.color ?? null,
+    images: m.images ?? [],
+    checklist: m.checklist ?? [],
+    pinned: m.pinned ?? false,
+    createdAt: r.createdAt as number,
+    updatedAt: r.updatedAt as number,
+    reminderAt,
+    repeat: reminderAt == null ? null : (m.repeat ?? "none"),
+    alertBefore: m.alertBefore ?? null,
+    source: m.source ?? null,
+    sourceRef: m.sourceRef ?? null,
+    deleted: (r.deleted as number) === 1,
+  };
+}
 
 export class D1Store implements Store {
   constructor(private db: D1Database) {}
@@ -265,27 +352,7 @@ export class D1Store implements Store {
         `SELECT id, text, createdAt, updatedAt, reminderAt, deleted, meta FROM note`,
       )
       .all();
-    return rows.results.map((r) => {
-      const m = decodeMeta(r.meta);
-      return {
-        id: r.id as string,
-        text: r.text as string,
-        kind: m.itemKind,
-        title: m.title,
-        body: m.body,
-        sectionId: m.sectionId ?? null,
-        location: m.location ?? null,
-        color: m.color ?? null,
-        images: m.images ?? [],
-        checklist: m.checklist ?? [],
-        pinned: m.pinned ?? false,
-        createdAt: r.createdAt as number,
-        updatedAt: r.updatedAt as number,
-        reminderAt: (r.reminderAt as number) ?? null,
-        repeat: (r.reminderAt as number) == null ? null : (m.repeat ?? "none"),
-        deleted: (r.deleted as number) === 1,
-      };
-    });
+    return rows.results.map(rowToNote);
   }
 
   async allSections(): Promise<Section[]> {
@@ -322,6 +389,78 @@ export class D1Store implements Store {
       .bind(row.salt, row.passHash, row.recoveryHash)
       .run();
   }
+
+  async getCalendar(): Promise<CalendarFeedRow | null> {
+    const r = await this.db
+      .prepare(`SELECT url, connectedAt FROM calendar_feed WHERE id = 1`)
+      .first<CalendarFeedRow>();
+    return r ?? null;
+  }
+
+  async setCalendar(row: CalendarFeedRow | null): Promise<void> {
+    if (!row) {
+      await this.db.prepare(`DELETE FROM calendar_feed`).run();
+      return;
+    }
+    await this.db
+      .prepare(
+        `INSERT INTO calendar_feed (id, url, connectedAt) VALUES (1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET url = excluded.url, connectedAt = excluded.connectedAt`,
+      )
+      .bind(row.url, row.connectedAt)
+      .run();
+  }
+
+  async getGoogle(): Promise<GoogleAccountRow | null> {
+    const r = await this.db
+      .prepare(
+        `SELECT refreshToken, accessToken, accessExpires, email, connectedAt, problem
+         FROM google_account WHERE id = 1`,
+      )
+      .first<GoogleAccountRow>();
+    return r ?? null;
+  }
+
+  async setGoogle(row: GoogleAccountRow | null): Promise<void> {
+    if (!row) {
+      await this.db.prepare(`DELETE FROM google_account`).run();
+      return;
+    }
+    await this.db
+      .prepare(
+        `INSERT INTO google_account (id, refreshToken, accessToken, accessExpires, email, connectedAt, problem)
+         VALUES (1, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET refreshToken = excluded.refreshToken,
+           accessToken = excluded.accessToken, accessExpires = excluded.accessExpires,
+           email = excluded.email, connectedAt = excluded.connectedAt, problem = excluded.problem`,
+      )
+      .bind(
+        row.refreshToken,
+        row.accessToken,
+        row.accessExpires,
+        row.email,
+        row.connectedAt,
+        row.problem,
+      )
+      .run();
+  }
+
+  async putOAuthState(state: string, returnUrl: string, expires: number, now: number): Promise<void> {
+    await this.db.batch([
+      this.db.prepare(`DELETE FROM oauth_state WHERE expires < ?`).bind(now),
+      this.db
+        .prepare(`INSERT INTO oauth_state (state, returnUrl, expires) VALUES (?, ?, ?)`)
+        .bind(state, returnUrl, expires),
+    ]);
+  }
+
+  async takeOAuthState(state: string, now: number): Promise<string | null> {
+    const r = await this.db
+      .prepare(`DELETE FROM oauth_state WHERE state = ? RETURNING returnUrl, expires`)
+      .bind(state)
+      .first<{ returnUrl: string; expires: number }>();
+    return r && r.expires >= now ? r.returnUrl : null;
+  }
 }
 
 export class MemoryStore implements Store {
@@ -329,6 +468,9 @@ export class MemoryStore implements Store {
   notes = new Map<string, Note>();
   sections = new Map<string, Section>();
   auth: AuthRow | null = null;
+  calendar: CalendarFeedRow | null = null;
+  google: GoogleAccountRow | null = null;
+  oauthStates = new Map<string, { returnUrl: string; expires: number }>();
   private seq = 0;
 
   async init(): Promise<void> {}
@@ -418,6 +560,10 @@ export class MemoryStore implements Store {
           op.reminderAt == null
             ? null
             : (op.repeat !== undefined ? op.repeat : (cur?.repeat ?? "none")),
+        alertBefore:
+          op.alertBefore !== undefined ? op.alertBefore : (cur?.alertBefore ?? null),
+        source: op.source !== undefined ? op.source : (cur?.source ?? null),
+        sourceRef: op.sourceRef !== undefined ? op.sourceRef : (cur?.sourceRef ?? null),
         deleted: false,
       });
     }
@@ -437,5 +583,32 @@ export class MemoryStore implements Store {
 
   async allSections(): Promise<Section[]> {
     return [...this.sections.values()];
+  }
+
+  async getCalendar(): Promise<CalendarFeedRow | null> {
+    return this.calendar;
+  }
+
+  async setCalendar(row: CalendarFeedRow | null): Promise<void> {
+    this.calendar = row;
+  }
+
+  async getGoogle(): Promise<GoogleAccountRow | null> {
+    return this.google ? { ...this.google } : null;
+  }
+
+  async setGoogle(row: GoogleAccountRow | null): Promise<void> {
+    this.google = row ? { ...row } : null;
+  }
+
+  async putOAuthState(state: string, returnUrl: string, expires: number, now: number): Promise<void> {
+    for (const [k, v] of this.oauthStates) if (v.expires < now) this.oauthStates.delete(k);
+    this.oauthStates.set(state, { returnUrl, expires });
+  }
+
+  async takeOAuthState(state: string, now: number): Promise<string | null> {
+    const r = this.oauthStates.get(state);
+    this.oauthStates.delete(state);
+    return r && r.expires >= now ? r.returnUrl : null;
   }
 }

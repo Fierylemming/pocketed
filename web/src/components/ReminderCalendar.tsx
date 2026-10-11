@@ -3,6 +3,7 @@ import {
   buildCalendarMonth,
   filterRemindersByColor,
   getReminderColor,
+  isHexColor,
   itemTitle,
   localDateKey,
   REMINDER_COLORS,
@@ -11,7 +12,7 @@ import {
   type ReminderColorId,
   type Section,
 } from "@pocketed/shared";
-import { reminderColorCounts } from "../view-model";
+import { extraReminderColors, reminderColorCounts } from "../view-model";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = [
@@ -57,6 +58,12 @@ export function ReminderCalendar({
   const [listMode, setListMode] = useState<"day" | "all">("day");
 
   const counts = reminderColorCounts(notes);
+  // Pocketed's six colours, then any exact Google Calendar colours in use.
+  const extras = extraReminderColors(notes);
+  if (isHexColor(colorFilter) && !extras.some((c) => c.id === colorFilter)) {
+    extras.push(getReminderColor(colorFilter));
+  }
+  const chipColors = [...REMINDER_COLORS, ...extras];
   const calendarDays = buildCalendarMonth(
     viewYear,
     viewMonth,
@@ -159,7 +166,7 @@ export function ReminderCalendar({
           <span>All colours</span>
           <span className="chip-count">{counts.all}</span>
         </button>
-        {REMINDER_COLORS.map((c) => {
+        {chipColors.map((c) => {
           const active = colorFilter === c.id;
           return (
             <button
@@ -182,7 +189,7 @@ export function ReminderCalendar({
                 style={{ backgroundColor: c.hex }}
               />
               <span>{c.label}</span>
-              <span className="chip-count">{counts[c.id]}</span>
+              <span className="chip-count">{counts[c.id] ?? 0}</span>
             </button>
           );
         })}

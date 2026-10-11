@@ -9,6 +9,18 @@
 //   GET  /v1/snapshot        bearer = password
 //   POST /v1/password        bearer = old password; { password } = new
 //   POST /v1/recovery        bearer = password; { recovery } = new recovery key
+//
+// Google Calendar link (secret iCal address). The apps parse the feed and
+// turn events into reminders; the server only stores and relays the link:
+//   GET  /v1/calendar             status (never returns the secret link)
+//   POST /v1/calendar             { url } check and save / replace the link
+//   GET  /v1/calendar/feed        the calendar: .ics streamed through, or JSON
+//                                 events with colours when signed in with Google
+//   POST /v1/calendar/disconnect  forget the link / Google sign-in
+//
+// Sign in with Google (needs GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET secrets):
+//   POST /v1/google/start         { returnUrl } -> { url } of Google's consent page
+//   GET  /v1/google/callback      public; Google returns here, then back to the app
 
 import {
   LIMITS,
@@ -17,10 +29,36 @@ import {
   type Op,
 } from "@pocketed/shared";
 import { hashWithSalt, newSalt } from "./auth";
+import {
+  calendarStatus,
+  CalendarInputError,
+  connectCalendar,
+  proxyFeed,
+  type Fetcher,
+} from "./calendar";
+import {
+  disconnectGoogle,
+  finishGoogleSignIn,
+  googleFeed,
+  redirectUriFor,
+  startGoogleSignIn,
+  type GoogleConfig,
+} from "./google";
 import { D1Store, type Store } from "./store";
 
 export interface Env {
   DB: D1Database;
+  /** Optional: enable "Sign in with Google" (see SETUP.md). */
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_REDIRECT_URI?: string;
+}
+
+export function googleConfig(env: Partial<Env>): GoogleConfig | undefined {
+  const clientId = env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return undefined;
+  return { clientId, clientSecret, redirectUri: env.GOOGLE_REDIRECT_URI?.trim() || undefined };
 }
 
 const CORS = {
@@ -49,7 +87,17 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-export async function handle(req: Request, store: Store): Promise<Response> {
+/** Injectable for tests. */
+export interface Deps {
+  fetch?: Fetcher;
+  now?: () => number;
+  /** Present when "Sign in with Google" is set up. */
+  google?: GoogleConfig;
+}
+
+export async function handle(req: Request, store: Store, deps: Deps = {}): Promise<Response> {
+  const now = deps.now ?? Date.now;
+  const fetcher: Fetcher = deps.fetch ?? ((u, i) => fetch(u, i));
   const url = new URL(req.url);
 
   if (req.method === "OPTIONS") {
@@ -64,6 +112,19 @@ export async function handle(req: Request, store: Store): Promise<Response> {
       notes: await store.noteCount(),
       initialized: (await store.getAuth()) !== null,
     });
+  }
+
+  // ---- Google sends the browser back here (public; protected by the one-time state) ----
+  if (url.pathname === "/v1/google/callback" && req.method === "GET") {
+    if (!deps.google) return json({ error: "Sign in with Google isn't set up on this server." }, 404);
+    return finishGoogleSignIn(
+      store,
+      deps.google,
+      redirectUriFor(deps.google, url),
+      url.searchParams,
+      now(),
+      fetcher,
+    );
   }
 
   // ---- public auth-setup endpoints ----
@@ -159,6 +220,62 @@ export async function handle(req: Request, store: Store): Promise<Response> {
     return json({ ...page, serverSeq: await store.serverSeq() });
   }
 
+  // ---- calendar (secret link or Google sign-in) ----
+
+  if (url.pathname.startsWith("/v1/calendar") || url.pathname.startsWith("/v1/google/")) {
+    const google = deps.google;
+    const status = () => calendarStatus(store, !!google);
+    try {
+      if (url.pathname === "/v1/calendar" && req.method === "GET") {
+        return json(await status());
+      }
+      if (url.pathname === "/v1/calendar" && req.method === "POST") {
+        const body = await readJson(req);
+        await connectCalendar(store, body?.url, now(), fetcher);
+        // One source at a time: a secret link replaces a Google sign-in.
+        await disconnectGoogle(store, fetcher);
+        return json(await status());
+      }
+      if (url.pathname === "/v1/calendar/feed" && req.method === "GET") {
+        if (await store.getGoogle()) {
+          if (!google) {
+            throw new CalendarInputError(
+              "Sign in with Google is no longer set up on this server. Connect the calendar again in Settings.",
+              502,
+            );
+          }
+          const feed = await googleFeed(store, google, now(), fetcher);
+          return new Response(JSON.stringify(feed), {
+            headers: { "content-type": "application/json", "cache-control": "no-store", ...CORS },
+          });
+        }
+        return await proxyFeed(store, fetcher, CORS);
+      }
+      if (url.pathname === "/v1/calendar/disconnect" && req.method === "POST") {
+        await disconnectGoogle(store, fetcher);
+        await store.setCalendar(null);
+        return json(await status());
+      }
+      if (url.pathname === "/v1/google/start" && req.method === "POST") {
+        if (!google) {
+          return json({ error: "Sign in with Google isn't set up on this server yet (see SETUP.md)." }, 501);
+        }
+        const body = await readJson(req);
+        const authUrl = await startGoogleSignIn(
+          store,
+          google,
+          redirectUriFor(google, url),
+          body?.returnUrl,
+          now(),
+        );
+        return json({ url: authUrl });
+      }
+    } catch (e) {
+      if (e instanceof CalendarInputError) return json({ error: e.message }, e.status);
+      throw e;
+    }
+  }
+
   if (url.pathname === "/v1/snapshot" && req.method === "GET") {
     return json({
       notes: await store.allNotes(),
@@ -182,6 +299,6 @@ export default {
       throw e;
     });
     await schemaReady;
-    return handle(req, store);
+    return handle(req, store, { google: googleConfig(env) });
   },
 };

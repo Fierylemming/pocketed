@@ -21,9 +21,10 @@ Nothing reaches your live site until a change is merged to `main`.
 ## Layout
 
 ```
-packages/shared   sync engine, reminders, auth rules (pure TypeScript, shared by everything)
-server            Cloudflare Worker + D1 store
+packages/shared   sync engine, reminders, calendar import rules, auth (pure TypeScript, shared by everything)
+server            Cloudflare Worker + D1 store (+ Google Calendar: src/calendar.ts link, src/google.ts sign-in)
 web               the website / installable app (React + Vite -> Cloudflare Pages)
+                  calendar parsing: src/ical.ts, src/calendar-import.ts
   web/public      manifest, service worker (sw.js), app icons, Cloudflare headers
 .github/workflows ci.yml (checks on branches/PRs) and deploy.yml (publishes on main)
 ```
@@ -61,6 +62,8 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - **Two Separate Creation Buttons** — choose between **📝 New Note** and **⏰ New Reminder**:
   - **Notes** are large items with a title, large body, image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
   - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour code.
+- **Google Calendar import** — connect your calendar once and its events show up as reminders automatically
+  (see below).
 - **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded across a curated 6-colour palette (Ruby, Amber, Emerald, Sky, Violet, Rose) with one-click colour filtering.
 
 ## Reminders: what to expect
@@ -77,6 +80,51 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - Reminders that fire **while the phone is locked and the app is closed** need Web Push
   (a server-side push service). That is not built yet; see "Next steps" below.
 
+## Google Calendar: auto-filled reminders
+
+Connect once in ⚙️ Settings → **Google Calendar** and your events show up as reminders on every device.
+There are two ways to connect:
+
+- **Sign in with Google** (recommended): copies each event's **exact Google colour**, so colour-coding
+  carries over. Pocketed asks for read-only access to your calendar and reads your main calendar. The server
+  owner has to set this up once first (SETUP.md, step 8). Until then the button doesn't appear.
+- **Secret link**: on a computer, open **calendar.google.com** → ⚙️ **Settings** → under **Settings for my
+  calendars** click your calendar → **Integrate calendar** → copy **Secret address in iCal format**, then
+  paste it into Pocketed. Google's link carries no colours, so these reminders are **Sky**.
+
+What happens:
+
+- Events in the **next 60 days** become reminders, labelled 📅 Google Calendar.
+- **Colours** (with Sign in with Google): an event keeps the colour you gave it in Google (Tomato, Sage,
+  Basil…). Events without their own colour take the calendar's colour. Google's colours appear as extra chips
+  in the calendar's colour filter, next to Pocketed's six. Changing an event's colour in Google updates the
+  reminder.
+- Timed events alert **30 minutes before** ("⏰ In 30 min") and again **when they start** ("📅 Starting now").
+  All-day events alert once, at 9:00 on the day.
+- Repeating events are added one occurrence at a time; skipped, moved and cancelled occurrences are respected.
+  With Sign in with Google, invitations you declined and "working location" markers are left out.
+- Pocketed checks the calendar **shortly after it opens, then every 15 minutes while it's on screen** (hourly in
+  the background), or straight away with **Check now**. Changes sync to your other devices as usual.
+- An event changed in Google updates its reminder; any section or pin you set yourself stays. Your own colour
+  choice also stays when connected by secret link (which has no colours).
+  A cancelled event's reminder is removed, and once an event has ended its reminder is cleared away.
+- ✅ or 🗑️ on an imported reminder sticks. It only comes back if the event is moved to a new time.
+- Switching from the secret link to Sign in with Google keeps the same reminders and just recolours them.
+  Only one connection is active at a time.
+- **Disconnect** removes the imported reminders and forgets the link, or revokes Pocketed's Google access.
+- The import is one-way: nothing is ever written back to Google.
+
+How it works: the sync server keeps the connection and relays the calendar to the app; the app turns events
+into reminders. With a secret link the app receives the whole calendar file and reads it on the device (a
+calendar's full history can be megabytes, more than the free Cloudflare plan's 10 ms of CPU per request
+allows). With Sign in with Google the server asks Google's Calendar API for just the next two months, already
+expanded, with colours. Alerts only fire while the app is running, so nothing is lost by checking from the app.
+
+Privacy: the secret address, and Google's sign-in token, are stored only in your sync server's database and are
+never sent back to the apps. If a secret link leaks, use **Reset** next to it in Google Calendar, then paste
+the new link into Pocketed (**Change link**). Google access can also be removed any time at
+myaccount.google.com → Security → Third-party apps.
+
 ## Security notes
 
 - Your password is the login for every device. It's stored only as a salted hash on the server.
@@ -86,6 +134,8 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 
 ## Next steps (not built yet)
 
+- **Google Calendar extras**: choose which calendars to import (Sign in with Google reads the main one today),
+  and optionally write back to Google.
 - **Closed-app reminders**: Web Push from the Worker, using a scheduled trigger to send alerts on time.
 - **Native Android app** (Expo, with a home-screen widget): the shared reminder helpers are ready for it.
 - Login rate limiting on the server.
