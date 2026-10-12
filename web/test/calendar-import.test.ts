@@ -175,6 +175,52 @@ describe("importCalendarNow", () => {
     expect(server.srv.log.find((o) => o.noteId === id && o.color === "#0b8043")).toBeTruthy();
   });
 
+  it("imports an event wearing one of Google's newer event colours (a label)", async () => {
+    // Avocado isn't one of the eleven colours events used to have, so it only
+    // reaches the API as a label on the event's own calendar.
+    const feed: GoogleFeed = {
+      source: "google", calendar: { colorId: "14" },
+      calendars: [
+        { id: "primary-id", primary: true, colorId: "14" },
+        {
+          id: "family-id",
+          colorId: "8",
+          eventLabels: [
+            { id: "label-avocado", backgroundColor: "#c0ca33", name: "Avocado" },
+            { id: "label-custom", backgroundColor: "#7c54c0" },
+          ],
+        },
+      ],
+      events: [
+        {
+          iCalUID: "avocado@google.com", summary: "Salad club", calendarId: "family-id",
+          eventLabelId: "label-avocado",
+          start: { dateTime: "2026-10-12T10:00:00Z" },
+          end: { dateTime: "2026-10-12T11:00:00Z" },
+        },
+        {
+          iCalUID: "custom@google.com", summary: "Pilates", calendarId: "family-id",
+          eventLabelId: "label-custom",
+          start: { dateTime: "2026-10-13T10:00:00Z" },
+          end: { dateTime: "2026-10-13T11:00:00Z" },
+        },
+        {
+          iCalUID: "plain@google.com", summary: "Plain", calendarId: "family-id",
+          start: { dateTime: "2026-10-14T10:00:00Z" },
+          end: { dateTime: "2026-10-14T11:00:00Z" },
+        },
+      ],
+    };
+    server.srv.google = feed;
+    const m = manager();
+    expect(await importCalendarNow(m)).toEqual({ added: 3, updated: 0, removed: 0 });
+    expect(m.state.notes[calendarNoteId('google:["family-id","avocado@google.com"]')].color).toBe("#c0ca33");
+    expect(m.state.notes[calendarNoteId('google:["family-id","custom@google.com"]')].color).toBe("#7c54c0");
+    expect(m.state.notes[calendarNoteId('google:["family-id","plain@google.com"]')].color).toBe("#0b8043");
+    await m.syncOnce();
+    expect(server.srv.log.filter((o) => o.source === "gcal")).toHaveLength(3);
+  });
+
   it("imports multiple calendars, syncs them, and keeps reminders when a check fails", async () => {
     const event = {
       iCalUID: "appointment@google.com", summary: "Appointment",

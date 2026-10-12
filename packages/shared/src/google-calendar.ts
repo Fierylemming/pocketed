@@ -2,6 +2,12 @@
 // into the same CalendarEvent list the iCal importer produces, plus each
 // event's exact Google colour (the iCal feed carries no colours at all).
 //
+// An event's colour reaches the API in two ways: the legacy `colorId` (the 11
+// colours events had before June 2026, reported in the old "classic" shades) or
+// an `eventLabelId` pointing at a label on the event's own calendar, which is
+// how the 24 default colours and any custom shade arrive. Labels win, because
+// they carry the shade Google Calendar itself shows.
+//
 // Primary-calendar keys deliberately match the iCal importer's — the iCalUID for one-off
 // events, `${iCalUID}@${originalStart}` for an occurrence of a repeating event —
 // so switching between the two sources updates reminders instead of
@@ -75,6 +81,11 @@ export interface GoogleEvent {
   description?: string;
   location?: string;
   colorId?: string;
+  /**
+   * The event's colour as one of the calendar's labels (Google's "custom event
+   * colours", June 2026 onwards). Looked up in the calendar's `eventLabels`.
+   */
+  eventLabelId?: string;
   start?: GoogleEventTime;
   end?: GoogleEventTime;
   originalStartTime?: GoogleEventTime;
@@ -83,12 +94,29 @@ export interface GoogleEvent {
   attendees?: { self?: boolean; responseStatus?: string }[];
 }
 
+/** One of a calendar's event colours ("labels"), referred to by id. */
+export interface GoogleEventLabel {
+  /** UUID. Events point at it with `eventLabelId`. */
+  id: string;
+  /** The colour Google Calendar shows, as "#rrggbb". */
+  backgroundColor: string;
+  /** The name the user gave the label, if any. */
+  name?: string;
+}
+
 /** Calendar-list metadata used to identify each event's source and colour. */
 export interface GoogleCalendar {
   id: string;
   primary?: boolean;
   colorId?: string;
   backgroundColor?: string;
+  /**
+   * The calendar's own event colours. Since June 2026 an event can wear any of
+   * Google's 24 colours (or one of up to 200 custom shades), and the API
+   * reports those only as a label id — the colour lives here, on the calendar
+   * resource, not in the calendar list.
+   */
+  eventLabels?: GoogleEventLabel[];
 }
 
 /** What the server's calendar feed returns when signed in with Google. */
@@ -120,9 +148,30 @@ export function googleCalendarColor(cal: GoogleFeed["calendar"] | null | undefin
   return HEX.test(bg) ? (bg as HexColor) : null;
 }
 
-/** An event's own colour, else its calendar's. */
-export function googleEventColor(ev: GoogleEvent, calendarColor: HexColor | null): HexColor | null {
-  return (ev.colorId && GOOGLE_EVENT_COLOR_IDS[ev.colorId]) || calendarColor;
+/** A calendar's event labels by id, ready to resolve an event's `eventLabelId`. */
+export function googleEventLabels(cal: GoogleCalendar | null | undefined): Map<string, HexColor> {
+  const out = new Map<string, HexColor>();
+  for (const label of cal?.eventLabels ?? []) {
+    const bg = typeof label?.backgroundColor === "string" ? label.backgroundColor.toLowerCase() : "";
+    if (label?.id && HEX.test(bg)) out.set(label.id, bg as HexColor);
+  }
+  return out;
+}
+
+/**
+ * An event's own colour: its label, else its (legacy) colour id, else its
+ * calendar's. A label carries exactly the shade Google Calendar shows — one of
+ * the 24 default colours or a custom one — so it wins. Events coloured from the
+ * old 11-colour palette carry a label too, but the id is kept as a fallback for
+ * calendars whose labels couldn't be read.
+ */
+export function googleEventColor(
+  ev: GoogleEvent,
+  calendarColor: HexColor | null,
+  labels?: ReadonlyMap<string, HexColor> | null,
+): HexColor | null {
+  const labelled = ev.eventLabelId ? labels?.get(ev.eventLabelId) : undefined;
+  return labelled || (ev.colorId && GOOGLE_EVENT_COLOR_IDS[ev.colorId]) || calendarColor;
 }
 
 /** Events that shouldn't become reminders. */
@@ -167,6 +216,17 @@ export function googleFeedToCalendarEvents(
 ): CalendarEvent[] {
   const calColor = googleCalendarColor(feed.calendar);
   const calendars = new Map((feed.calendars ?? []).map((cal) => [cal.id, cal]));
+  // Labels are per calendar: the same id on two calendars is a different colour.
+  const labelMaps = new Map<string, Map<string, HexColor>>();
+  const labelsFor = (calendarId: string | undefined): Map<string, HexColor> | null => {
+    if (!calendarId) return null;
+    let m = labelMaps.get(calendarId);
+    if (!m) {
+      m = googleEventLabels(calendars.get(calendarId));
+      labelMaps.set(calendarId, m);
+    }
+    return m;
+  };
   const out: CalendarEvent[] = [];
   for (const ev of feed.events) {
     if (!ev || typeof ev !== "object" || skipGoogleEvent(ev)) continue;
@@ -211,7 +271,11 @@ export function googleFeedToCalendarEvents(
       start,
       end,
       allDay,
-      color: googleEventColor(ev, calendar ? googleCalendarColor(calendar) : calColor),
+      color: googleEventColor(
+        ev,
+        calendar ? googleCalendarColor(calendar) : calColor,
+        ev.eventLabelId ? labelsFor(ev.calendarId) : null,
+      ),
     });
   }
   out.sort((a, b) => a.start - b.start || a.key.localeCompare(b.key));
