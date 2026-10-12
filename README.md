@@ -110,6 +110,12 @@ What happens:
   All-day events alert once, at 9:00 on the day.
 - Repeating events are added one occurrence at a time; skipped, moved and cancelled occurrences are respected.
   With Sign in with Google, invitations you declined and "working location" markers are left out.
+- **A check never deletes reminders it can't vouch for.** An event you cancel or delete in Google removes its
+  reminder straight away, because the calendar says so. Everything else is only removed once the event has
+  *started* and is no longer on the calendar — an event still to come is never removed just because it wasn't in
+  one feed, and a check that comes back empty, cut short, or from a different calendar source changes nothing
+  but says so in Settings. Reminders a check did remove in bulk come back by themselves on the next check if the
+  calendar still has the events.
 - Pocketed checks the calendar **shortly after it opens, then every 15 minutes while it's on screen** (hourly in
   the background), or straight away with **Check now**. Changes sync to your other devices as usual.
 - An event changed in Google updates its reminder; any section or pin you set yourself stays. Your own colour

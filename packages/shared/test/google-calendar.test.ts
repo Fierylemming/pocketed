@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { calendarNoteId, reconcileCalendar, type CalendarEvent } from "../src/calendar";
 import {
   googleCalendarColor,
+  googleCancelledKeys,
   googleEventColor,
   googleEventLabels,
   googleFeedToCalendarEvents,
@@ -264,12 +265,81 @@ describe("Google events -> calendar events", () => {
     }, opts), NOW + 2);
     expect(again).toMatchObject({ added: 0, updated: 0, removed: 0 });
 
-    // Removing access/subscription to one calendar removes only its reminders.
+    // A calendar that drops out of the feed doesn't cost its reminders: the
+    // event is still to come, so the reminder stays until it has started.
     const remaining = googleFeedToCalendarEvents({
       ...multi, events: multi.events.filter((e) => e.calendarId !== "family"),
     }, opts);
-    expect(reconcileCalendar(imported.state, remaining, NOW + 3))
-      .toMatchObject({ added: 0, updated: 0, removed: 1 });
+    const kept = reconcileCalendar(imported.state, remaining, NOW + 3);
+    expect(kept).toMatchObject({ added: 0, updated: 0, removed: 0, kept: 1 });
+    const familyKey = converted.find((e) => e.key.includes('"family"'))!.key;
+    expect(kept.state.notes[calendarNoteId(familyKey)].deleted).toBe(false);
+
+    // Once that event has started and the calendar still doesn't list it, its
+    // reminder goes like any other event that's over.
+    expect(reconcileCalendar(kept.state, remaining, NOW + 3 * DAY))
+      .toMatchObject({ removed: 1, kept: 0 });
+  });
+
+  it("keeps the rest of the window when the feed doesn't say where it ends", () => {
+    // The server cuts the feed to the upcoming window with its own clock, so
+    // the app passes no window of its own: nothing is dropped for being far off.
+    const at = (uid: string, days: number) => ({
+      iCalUID: uid,
+      start: { dateTime: new Date(NOW + days * DAY).toISOString() },
+      end: { dateTime: new Date(NOW + days * DAY + 3_600_000).toISOString() },
+    });
+    const events = [at("soon", 1), at("later", 30), at("latest", 59)];
+    expect(
+      googleFeedToCalendarEvents(feed(events), { timeZone: "Europe/London" }).map((e) => e.key),
+    ).toEqual(["soon", "later", "latest"]);
+    // …whereas an explicit window still filters, for callers that want one.
+    expect(
+      googleFeedToCalendarEvents(feed(events), { ...opts, to: NOW + 7 * DAY }).map((e) => e.key),
+    ).toEqual(["soon"]);
+  });
+
+  it("collects the events Google reports as cancelled or deleted, and their exact keys", () => {
+    const event = {
+      iCalUID: "same@google.com", summary: "Shared appointment",
+      start: { dateTime: "2026-10-12T10:00:00Z" },
+      end: { dateTime: "2026-10-12T11:00:00Z" },
+    };
+    const cancelled: GoogleFeed = {
+      source: "google",
+      calendar: { colorId: "14" },
+      calendars: [{ id: "me", primary: true, colorId: "14" }, { id: "family", colorId: "8" }],
+      events: [
+        { iCalUID: "one-off@google.com", status: "cancelled" },
+        {
+          iCalUID: "rep@google.com",
+          status: "cancelled",
+          recurringEventId: "rep@google.com",
+          originalStartTime: { dateTime: "2026-10-12T10:00:00Z" },
+        },
+        { iCalUID: "fam@google.com", status: "cancelled", calendarId: "family" },
+        { iCalUID: "wfh@google.com", status: "cancelled", eventType: "workingLocation" },
+        {
+          iCalUID: "declined@google.com",
+          status: "cancelled",
+          attendees: [{ self: true, responseStatus: "declined" }],
+        },
+        { ...event, calendarId: "me" }, // still on: not a cancellation
+      ],
+    };
+    expect(googleCancelledKeys(cancelled, opts)).toEqual([
+      "one-off@google.com",
+      `rep@google.com@${Date.UTC(2026, 9, 12, 10, 0)}`,
+      `google:${JSON.stringify(["family", "fam@google.com"])}`,
+    ]);
+    // The keys match what the importer would have called those reminders.
+    expect(calendarNoteId(googleCancelledKeys(cancelled, opts)[0])).toBe(
+      calendarNoteId("one-off@google.com"),
+    );
+    // Only the event that is still on becomes a reminder.
+    expect(googleFeedToCalendarEvents(cancelled, opts).map((e) => e.key)).toEqual([
+      "same@google.com",
+    ]);
   });
 
   it("resolves an event's label against its own calendar, falling back when unknown", () => {

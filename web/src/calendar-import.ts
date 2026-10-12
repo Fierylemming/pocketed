@@ -11,10 +11,13 @@
 
 import {
   CALENDAR_WINDOW_DAYS,
+  googleCancelledKeys,
   googleFeedToCalendarEvents,
   MAX_IMPORTED_EVENTS,
   reconcileCalendar,
   removeImportedReminders,
+  type CalendarEvent,
+  type ReconcileOptions,
   type SyncState,
 } from "@pocketed/shared";
 import { api, ApiError } from "./api";
@@ -30,6 +33,10 @@ export interface ImportCounts {
   added: number;
   updated: number;
   removed: number;
+  /** Reminders a previous check removed in bulk that this check found again. */
+  restored: number;
+  /** Reminders left alone because this check couldn't vouch for the whole calendar. */
+  kept: number;
 }
 
 /** What this device last saw (kept in localStorage, shared between tabs). */
@@ -39,6 +46,8 @@ export interface LocalCalendarState {
   lastCheck: number | null;
   lastError: string | null;
   lastCounts: ImportCounts | null;
+  /** Which feed the last check read: "google" (all calendars) or "link" (one). */
+  source: "google" | "link" | null;
 }
 
 const empty: LocalCalendarState = {
@@ -46,6 +55,7 @@ const empty: LocalCalendarState = {
   lastCheck: null,
   lastError: null,
   lastCounts: null,
+  source: null,
 };
 
 export function loadCalendarState(): LocalCalendarState {
@@ -96,28 +106,38 @@ export function importCalendarNow(manager: SyncManager): Promise<ImportCounts> {
   return running;
 }
 
+/** The whole-calendar window the app reads for itself (the secret-link feed). */
+function linkWindow() {
+  const now = Date.now();
+  return {
+    from: now,
+    to: now + CALENDAR_WINDOW_DAYS * 24 * 60 * MIN,
+    timeZone: deviceTimeZone(),
+    maxEvents: MAX_IMPORTED_EVENTS,
+  };
+}
+
 async function run(manager: SyncManager): Promise<ImportCounts> {
   const startedAt = Date.now();
   try {
     // Work from fresh state so a reminder dismissed on another device stays dismissed.
     await manager.syncOnce();
     const data = await api.calendarFeed(manager.cfg);
-    const window = () => {
-      const now = Date.now();
-      return {
-        from: now,
-        to: now + CALENDAR_WINDOW_DAYS * 24 * 60 * MIN,
-        timeZone: deviceTimeZone(),
-        maxEvents: MAX_IMPORTED_EVENTS,
-      };
-    };
-    let events;
+    let events: CalendarEvent[];
+    let cancelledKeys: string[] = [];
     if (data.kind === "google") {
-      events = googleFeedToCalendarEvents(data.feed, window());
+      // The server has already cut the feed to the upcoming window with its own
+      // clock, so the app doesn't filter by the device's: a phone with a wrong
+      // clock or zone can only ever read the calendar, never empty it.
+      const opts = { timeZone: deviceTimeZone(), maxEvents: MAX_IMPORTED_EVENTS };
+      events = googleFeedToCalendarEvents(data.feed, opts);
+      cancelledKeys = googleCancelledKeys(data.feed, opts);
     } else {
-      const { parseCalendar, CalendarParseError } = await import("./ical");
+      const { parseCalendarDetailed, CalendarParseError } = await import("./ical");
       try {
-        events = parseCalendar(data.text, window());
+        const parsed = parseCalendarDetailed(data.text, linkWindow());
+        events = parsed.events;
+        cancelledKeys = parsed.cancelledKeys;
       } catch (e) {
         throw new Error(
           e instanceof CalendarParseError ? e.message : "The calendar couldn't be read.",
@@ -125,12 +145,19 @@ async function run(manager: SyncManager): Promise<ImportCounts> {
       }
     }
     const now = Date.now();
-    const preview = reconcileCalendar(manager.state, events, now);
-    const counts = { added: preview.added, updated: preview.updated, removed: preview.removed };
-    if (counts.added || counts.updated || counts.removed) {
-      manager.mutate((s) => reconcileCalendar(s, events, now).state);
+    const opts = reconcileOptions(data.kind, events, cancelledKeys);
+    const preview = reconcileCalendar(manager.state, events, now, opts);
+    const counts = importCounts(preview);
+    if (counts.added || counts.updated || counts.removed || counts.restored) {
+      manager.mutate((s) => reconcileCalendar(s, events, now, opts).state);
     }
-    saveCalendarState({ connected: true, lastCheck: startedAt, lastError: null, lastCounts: counts });
+    saveCalendarState({
+      connected: true,
+      lastCheck: startedAt,
+      lastError: null,
+      lastCounts: counts,
+      source: data.kind === "google" ? "google" : "link",
+    });
     return counts;
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
@@ -148,12 +175,46 @@ async function run(manager: SyncManager): Promise<ImportCounts> {
   }
 }
 
+/**
+ * How much this check is allowed to do. A check may add and update freely, but
+ * it only removes reminders whose event has started and is missing from the
+ * feed — and only when the feed is one it can vouch for. An empty list (an
+ * account with nothing on, or a feed that came back wrong), a list clipped by
+ * the import cap, or a change of feed (all calendars vs one secret link) all
+ * mean "keep what's there": a check must never be the reason reminders vanish.
+ */
+function reconcileOptions(
+  kind: "google" | "ics",
+  events: CalendarEvent[],
+  cancelledKeys: string[],
+): ReconcileOptions {
+  const source = kind === "google" ? "google" : "link";
+  const trustFeed = events.length > 0 && events.length < MAX_IMPORTED_EVENTS && loadCalendarState().source === source;
+  return { sweep: trustFeed, cancelledKeys };
+}
+
+function importCounts(r: {
+  added: number;
+  updated: number;
+  removed: number;
+  restored: number;
+  kept: number;
+}): ImportCounts {
+  return {
+    added: r.added,
+    updated: r.updated,
+    removed: r.removed,
+    restored: r.restored,
+    kept: r.kept,
+  };
+}
+
 /** Removes this account's imported reminders (after disconnecting). */
 export function removeImported(manager: SyncManager): number {
   const now = Date.now();
   const r = removeImportedReminders(manager.state, now);
   if (r.removed) manager.mutate((s) => removeImportedReminders(s, now).state);
-  saveCalendarState({ connected: false, lastError: null, lastCounts: null });
+  saveCalendarState({ connected: false, lastError: null, lastCounts: null, source: null });
   return r.removed;
 }
 
