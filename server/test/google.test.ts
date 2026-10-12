@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { GoogleCalendar, GoogleEvent } from "@pocketed/shared";
 import { handle } from "../src/worker";
 import { MemoryStore } from "../src/store";
 import { GOOGLE_SCOPE, normalizeReturnUrl } from "../src/google";
@@ -7,6 +8,12 @@ const PASS = "test-password-1";
 const GOOGLE = { clientId: "cid.apps.googleusercontent.com", clientSecret: "shh" };
 const APP = "https://pocketed.example.pages.dev/";
 const ICS = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n";
+
+type EventPage = { items?: GoogleEvent[]; nextPageToken?: string };
+type CalendarPage = {
+  items?: (GoogleCalendar & { accessRole: string; hidden?: boolean; selected?: boolean; deleted?: boolean })[];
+  nextPageToken?: string;
+};
 
 interface Call {
   url: string;
@@ -23,6 +30,13 @@ function fakeGoogle() {
     scope: GOOGLE_SCOPE,
     refreshError: null as string | null,
     tokenCount: 0,
+    calendarPages: [{ items: [{
+      id: "me@gmail.com", primary: true, accessRole: "owner",
+      colorId: "14", backgroundColor: "#9fe1e7",
+    }] }] as CalendarPage[],
+    otherEvents: {} as Record<string, EventPage[]>,
+    failCalendar: null as string | null,
+    unauthorizedOnce: false,
     pages: [
       {
         items: [
@@ -87,8 +101,22 @@ function fakeGoogle() {
       if (u.pathname.endsWith("/users/me/calendarList/primary")) {
         return Response.json({ id: "me@gmail.com", colorId: "14", backgroundColor: "#9fe1e7" });
       }
-      if (u.pathname.endsWith("/calendars/primary/events")) {
-        return Response.json(u.searchParams.get("pageToken") === "p2" ? g.pages[1] : g.pages[0]);
+      if (u.pathname.endsWith("/users/me/calendarList")) {
+        const page = Number(u.searchParams.get("pageToken") ?? 0);
+        return Response.json(g.calendarPages[page]);
+      }
+      const eventPath = /\/calendars\/([^/]+)\/events$/.exec(u.pathname);
+      if (eventPath) {
+        const id = decodeURIComponent(eventPath[1]);
+        if (g.unauthorizedOnce) {
+          g.unauthorizedOnce = false;
+          return new Response("expired", { status: 401 });
+        }
+        if (id === g.failCalendar) return new Response("unavailable", { status: 503 });
+        const pages = id === "me@gmail.com" ? g.pages : g.otherEvents[id];
+        return pages
+          ? Response.json(u.searchParams.get("pageToken") === "p2" ? pages[1] : pages[0])
+          : new Response("not found", { status: 404 });
       }
       if (url.endsWith(".ics")) return new Response(ICS);
       return new Response("not found", { status: 404 });
@@ -241,6 +269,74 @@ describe("sign in with Google", () => {
     expect(q.get("timeMin")).toBe(new Date(1_000_000).toISOString());
     expect(evCall.auth).toBe("Bearer at-1"); // the token from sign-in, reused
     expect(a.g.calls.filter((c) => c.url.includes("pageToken=p2"))).toHaveLength(1);
+  });
+
+  it("paginates the calendar list and each calendar, including shared and hidden calendars", async () => {
+    const a = await app();
+    await a.signIn();
+    const sharedId = "family/+chores#@group.calendar.google.com";
+    a.g.calendarPages[0].nextPageToken = "1";
+    a.g.calendarPages.push({ items: [
+      { id: sharedId, accessRole: "reader", colorId: "8", hidden: true, selected: false },
+      { id: "owned", accessRole: "owner", colorId: "3" },
+      { id: "subscribed", accessRole: "reader" },
+      { id: "busy-only", accessRole: "freeBusyReader" },
+      { id: "deleted", accessRole: "owner", deleted: true },
+    ] });
+    a.g.otherEvents[sharedId] = [
+      { items: [{ id: "f1" }], nextPageToken: "p2" },
+      { items: [{ id: "f2" }, { id: "cancelled", status: "cancelled" }] },
+    ];
+    a.g.otherEvents.owned = [{ items: [{ id: "o1" }] }];
+    a.g.otherEvents.subscribed = [{}]; // empty calendars may omit items
+    const r = await a.call("/v1/calendar/feed");
+    expect(r.status).toBe(200);
+    expect(r.body.calendars.map((c: GoogleCalendar) => c.id)).toEqual([
+      "me@gmail.com", sharedId, "owned", "subscribed",
+    ]);
+    expect(r.body.events.map((e: GoogleEvent) => [e.id, e.calendarId])).toEqual([
+      ["a", "me@gmail.com"], ["e", "me@gmail.com"],
+      ["f1", sharedId], ["f2", sharedId], ["o1", "owned"],
+    ]);
+    expect(r.body.calendars[1].colorId).toBe("8");
+    const listCall = a.g.calls.find((c) => new URL(c.url).pathname.endsWith("/calendarList"))!;
+    expect(new URL(listCall.url).searchParams.get("minAccessRole")).toBe("reader");
+    expect(new URL(listCall.url).searchParams.get("showHidden")).toBe("true");
+    expect(a.g.calls.some((c) => c.url.includes(encodeURIComponent(sharedId)))).toBe(true);
+  });
+
+  it("fails the entire feed if one calendar fails, rather than reconciling a partial snapshot", async () => {
+    const a = await app();
+    await a.signIn();
+    a.g.calendarPages[0].items!.push({ id: "shared", accessRole: "reader" });
+    a.g.failCalendar = "shared";
+    const r = await a.call("/v1/calendar/feed");
+    expect(r.status).toBe(502);
+    expect(r.body.error).toMatch(/503/);
+    expect(r.body.events).toBeUndefined();
+  });
+
+  it("refuses truncated calendar lists and event pages", async () => {
+    const a = await app();
+    await a.signIn();
+    const original = a.g.calendarPages;
+    a.g.calendarPages = Array.from({ length: 4 }, (_, i) => ({ nextPageToken: String(i + 1) }));
+    const list = await a.call("/v1/calendar/feed");
+    expect(list.status).toBe(502);
+    expect(list.body.error).toMatch(/too many calendars/);
+    a.g.calendarPages = original;
+    a.g.pages[1].nextPageToken = "p2";
+    const events = await a.call("/v1/calendar/feed");
+    expect(events.status).toBe(502);
+    expect(events.body.error).toMatch(/too many events/);
+  });
+
+  it("retries an event request after an early token expiry", async () => {
+    const a = await app();
+    await a.signIn();
+    a.g.unauthorizedOnce = true;
+    expect((await a.call("/v1/calendar/feed")).status).toBe(200);
+    expect(a.g.tokenCount).toBe(2);
   });
 
   it("refreshes the access token when it runs out", async () => {

@@ -2,10 +2,11 @@
 // into the same CalendarEvent list the iCal importer produces, plus each
 // event's exact Google colour (the iCal feed carries no colours at all).
 //
-// Event keys deliberately match the iCal importer's — the iCalUID for one-off
+// Primary-calendar keys deliberately match the iCal importer's — the iCalUID for one-off
 // events, `${iCalUID}@${originalStart}` for an occurrence of a repeating event —
 // so switching between the two sources updates reminders instead of
-// duplicating them.
+// duplicating them. Other calendars namespace keys by calendar ID, so copies
+// of an event on different calendars never overwrite each other.
 
 import { ALL_DAY_HOUR, cleanDescription, cleanLine, zonedToEpoch } from "./calendar-util";
 import type { CalendarEvent } from "./calendar";
@@ -65,6 +66,8 @@ export interface GoogleEventTime {
 
 /** The subset of a Google Calendar API Event resource that Pocketed reads. */
 export interface GoogleEvent {
+  /** Added by Pocketed when relaying events from multiple calendars. */
+  calendarId?: string;
   id?: string;
   iCalUID?: string;
   status?: string;
@@ -80,10 +83,20 @@ export interface GoogleEvent {
   attendees?: { self?: boolean; responseStatus?: string }[];
 }
 
+/** Calendar-list metadata used to identify each event's source and colour. */
+export interface GoogleCalendar {
+  id: string;
+  primary?: boolean;
+  colorId?: string;
+  backgroundColor?: string;
+}
+
 /** What the server's calendar feed returns when signed in with Google. */
 export interface GoogleFeed {
   source: "google";
+  /** Primary colour, retained for clients/servers using the single-calendar feed. */
   calendar: { colorId?: string; backgroundColor?: string };
+  calendars?: GoogleCalendar[];
   events: GoogleEvent[];
 }
 
@@ -153,6 +166,7 @@ export function googleFeedToCalendarEvents(
   opts: GoogleConvertOptions,
 ): CalendarEvent[] {
   const calColor = googleCalendarColor(feed.calendar);
+  const calendars = new Map((feed.calendars ?? []).map((cal) => [cal.id, cal]));
   const out: CalendarEvent[] = [];
   for (const ev of feed.events) {
     if (!ev || typeof ev !== "object" || skipGoogleEvent(ev)) continue;
@@ -184,6 +198,11 @@ export function googleFeedToCalendarEvents(
       if (orig != null) key = `${uid}@${orig}`;
     }
 
+    const calendar = ev.calendarId ? calendars.get(ev.calendarId) : undefined;
+    if (ev.calendarId && !calendar?.primary) {
+      key = `google:${JSON.stringify([ev.calendarId, key])}`;
+    }
+
     out.push({
       key,
       title: cleanLine(ev.summary ?? "") || "(No title)",
@@ -192,7 +211,7 @@ export function googleFeedToCalendarEvents(
       start,
       end,
       allDay,
-      color: googleEventColor(ev, calColor),
+      color: googleEventColor(ev, calendar ? googleCalendarColor(calendar) : calColor),
     });
   }
   out.sort((a, b) => a.start - b.start || a.key.localeCompare(b.key));

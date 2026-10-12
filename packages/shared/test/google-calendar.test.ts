@@ -176,6 +176,81 @@ describe("Google events -> calendar events", () => {
     ]);
   });
 
+  it("keeps calendar identities and colours separate while preserving primary reminder IDs", () => {
+    const event = {
+      iCalUID: "same@google.com", summary: "Shared appointment",
+      start: { dateTime: "2026-10-12T10:00:00Z" },
+      end: { dateTime: "2026-10-12T11:00:00Z" },
+    };
+    const multi: GoogleFeed = {
+      source: "google", calendar: { colorId: "14" },
+      calendars: [
+        { id: "me", primary: true, colorId: "14" },
+        { id: "family", colorId: "8" },
+        { id: "work", backgroundColor: "#123456" },
+      ],
+      events: [
+        { ...event, calendarId: "me" },
+        { ...event, calendarId: "family" },
+        { ...event, calendarId: "work", colorId: "11" },
+      ],
+    };
+    const converted = googleFeedToCalendarEvents(multi, opts);
+    expect(new Set(converted.map((e) => e.key)).size).toBe(3);
+    expect(converted.find((e) => e.key === event.iCalUID)?.color).toBe("#039be5");
+    expect(converted.find((e) => e.key.includes('"family"'))?.color).toBe("#0b8043");
+    expect(converted.find((e) => e.key.includes('"work"'))?.color).toBe("#d50000");
+
+    const old = reconcileCalendar(emptyState(), googleFeedToCalendarEvents(feed([event], multi.calendar), opts), NOW);
+    const imported = reconcileCalendar(old.state, converted, NOW + 1);
+    expect(imported).toMatchObject({ added: 2, updated: 0, removed: 0 });
+    const again = reconcileCalendar(imported.state, googleFeedToCalendarEvents({
+      ...multi, calendars: [...multi.calendars!].reverse(), events: [...multi.events].reverse(),
+    }, opts), NOW + 2);
+    expect(again).toMatchObject({ added: 0, updated: 0, removed: 0 });
+
+    // Removing access/subscription to one calendar removes only its reminders.
+    const remaining = googleFeedToCalendarEvents({
+      ...multi, events: multi.events.filter((e) => e.calendarId !== "family"),
+    }, opts);
+    expect(reconcileCalendar(imported.state, remaining, NOW + 3))
+      .toMatchObject({ added: 0, updated: 0, removed: 1 });
+  });
+
+  it("uses stable recurring keys per calendar, including all-day events and moved instances", () => {
+    const multi: GoogleFeed = {
+      source: "google", calendar: {},
+      calendars: [{ id: "family", colorId: "8" }],
+      events: [
+        { calendarId: "family", iCalUID: "repeat", recurringEventId: "r",
+          originalStartTime: { date: "2026-10-12" }, start: { date: "2026-10-13" } },
+        { calendarId: "family", iCalUID: "repeat", recurringEventId: "r",
+          originalStartTime: { date: "2026-10-19" }, start: { date: "2026-10-19" } },
+      ],
+    };
+    const before = googleFeedToCalendarEvents(multi, opts);
+    expect(before[0].key).not.toBe(before[1].key);
+    multi.events[0].start = { date: "2026-10-14" };
+    const after = googleFeedToCalendarEvents(multi, opts);
+    expect(after.map((e) => e.key)).toEqual(before.map((e) => e.key));
+    expect(after[0]).toMatchObject({ allDay: true, color: "#0b8043" });
+  });
+
+  it("sorts and caps events across all calendars, not separately per calendar", () => {
+    const multi: GoogleFeed = {
+      source: "google", calendar: {},
+      calendars: [{ id: "me", primary: true }, { id: "family" }],
+      events: [
+        { calendarId: "me", id: "later", start: { date: "2026-10-20" } },
+        { calendarId: "family", id: "sooner", start: { date: "2026-10-12" } },
+      ],
+    };
+    const out = googleFeedToCalendarEvents(multi, { ...opts, maxEvents: 1 });
+    expect(out).toHaveLength(1);
+    expect(out[0].key).toContain("sooner");
+    expect(out[0].color).toBeNull();
+  });
+
   it("skips cancelled, declined, working-location and out-of-window events", () => {
     const t = (iso: string) => ({ dateTime: iso });
     const events = googleFeedToCalendarEvents(
