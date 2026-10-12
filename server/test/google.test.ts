@@ -272,12 +272,17 @@ describe("sign in with Google", () => {
     const feed = (await r.json()) as any;
     expect(feed.source).toBe("google");
     expect(feed.calendar).toEqual({ colorId: "14", backgroundColor: "#9fe1e7" });
-    expect(feed.events.map((e: any) => e.id)).toEqual(["a", "e"]);
+    // Cancelled events are relayed on purpose: the app removes their reminders
+    // from the calendar's own word, not by guessing from an event's absence.
+    // Working-location markers and declined invitations are not appointments.
+    expect(feed.events.map((e: any) => e.id)).toEqual(["a", "b", "e"]);
+    expect(feed.events.find((e: any) => e.id === "b").status).toBe("cancelled");
     expect(feed.events[0].colorId).toBe("11");
 
     const evCall = a.g.calls.find((c) => c.url.includes("/events"))!;
     const q = new URL(evCall.url).searchParams;
     expect(q.get("singleEvents")).toBe("true");
+    expect(q.get("showDeleted")).toBe("true");
     expect(q.get("timeMin")).toBe(new Date(1_000_000).toISOString());
     expect(evCall.auth).toBe("Bearer at-1"); // the token from sign-in, reused
     expect(a.g.calls.filter((c) => c.url.includes("pageToken=p2"))).toHaveLength(1);
@@ -346,8 +351,8 @@ describe("sign in with Google", () => {
       "me@gmail.com", sharedId, "owned", "subscribed",
     ]);
     expect(r.body.events.map((e: GoogleEvent) => [e.id, e.calendarId])).toEqual([
-      ["a", "me@gmail.com"], ["e", "me@gmail.com"],
-      ["f1", sharedId], ["f2", sharedId], ["o1", "owned"],
+      ["a", "me@gmail.com"], ["b", "me@gmail.com"], ["e", "me@gmail.com"],
+      ["f1", sharedId], ["f2", sharedId], ["cancelled", sharedId], ["o1", "owned"],
     ]);
     expect(r.body.calendars[1].colorId).toBe("8");
     const listCall = a.g.calls.find((c) => new URL(c.url).pathname.endsWith("/calendarList"))!;

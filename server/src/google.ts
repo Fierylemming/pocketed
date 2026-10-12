@@ -11,7 +11,7 @@
 //   app  -> GET /v1/calendar/feed -> { source: "google", calendar, calendars, events }
 
 import {
-  skipGoogleEvent,
+  skipGoogleEventForever,
   type GoogleCalendar,
   type GoogleEvent,
   type GoogleEventLabel,
@@ -360,6 +360,10 @@ export async function googleFeed(
   const base = new URLSearchParams({
     singleEvents: "true",
     orderBy: "startTime",
+    // Cancelled/deleted events come through as such (status "cancelled"), which
+    // lets the app remove their reminders on the calendar's word instead of
+    // guessing from an absence that might just be a partial feed.
+    showDeleted: "true",
     timeMin: new Date(now).toISOString(),
     timeMax: new Date(now + WINDOW_DAYS * DAY).toISOString(),
     maxResults: String(PAGE_SIZE),
@@ -415,7 +419,10 @@ export async function googleFeed(
         if (pageToken) q.set("pageToken", pageToken);
         const page = await get<Page>(`${API}/calendars/${encodeURIComponent(cal.id)}/events?${q}`);
         for (const ev of page.items ?? []) {
-          if (!skipGoogleEvent(ev)) items.push({ ...ev, calendarId: cal.id });
+          // Cancelled events are kept: the app needs them to know which
+          // reminders to remove. Declined invitations and working-location
+          // markers are simply not appointments.
+          if (!skipGoogleEventForever(ev)) items.push({ ...ev, calendarId: cal.id });
         }
         if (!page.nextPageToken) break;
         if (i + 1 >= MAX_PAGES) {

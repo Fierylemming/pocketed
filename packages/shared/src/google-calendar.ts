@@ -174,14 +174,21 @@ export function googleEventColor(
   return labelled || (ev.colorId && GOOGLE_EVENT_COLOR_IDS[ev.colorId]) || calendarColor;
 }
 
-/** Events that shouldn't become reminders. */
-export function skipGoogleEvent(ev: GoogleEvent): boolean {
-  if (ev.status === "cancelled") return true;
-  // "Working from home/office" markers aren't appointments.
+/**
+ * Events the calendar should never be asked about: "working from home/office"
+ * markers (not appointments) and invitations you said no to. Unlike a cancelled
+ * event, these are not news — they are simply not imported, so an unrecognised
+ * one changes nothing.
+ */
+export function skipGoogleEventForever(ev: GoogleEvent): boolean {
   if (ev.eventType === "workingLocation") return true;
-  // Invitations you said no to.
   if (ev.attendees?.some((a) => a.self && a.responseStatus === "declined")) return true;
   return false;
+}
+
+/** Events that shouldn't become reminders: those, plus the cancelled/deleted ones. */
+export function skipGoogleEvent(ev: GoogleEvent): boolean {
+  return ev.status === "cancelled" || skipGoogleEventForever(ev);
 }
 
 function parseDate(s: string | undefined): { y: number; mo: number; d: number } | null {
@@ -201,13 +208,61 @@ function toEpoch(t: GoogleEventTime | undefined, timeZone: string, hour: number)
 }
 
 export interface GoogleConvertOptions {
-  /** Keep events that haven't ended by this time… */
-  from: number;
-  /** …and that start before this time. */
-  to: number;
+  /**
+   * Keep events that haven't ended by this time… Optional: the server has
+   * already cut the feed to the upcoming window with *its* clock, so the app
+   * deliberately leaves these unset — a phone with a wrong clock must not be
+   * able to empty the calendar, and an empty event list means a failed check
+   * (which must never remove reminders).
+   */
+  from?: number;
+  /** …and that start before this time. Optional, as above. */
+  to?: number;
   /** The device's IANA zone (for all-day events). */
   timeZone: string;
   maxEvents?: number;
+}
+
+/**
+ * The key that identifies one occurrence of an event, the same on every device
+ * and the same for the iCal feed: the iCalUID, plus the original start for one
+ * occurrence of a repeating event. Other calendars namespace by calendar id, so
+ * copies of an event on two calendars stay separate.
+ */
+function googleEventKey(
+  ev: GoogleEvent,
+  calendars: ReadonlyMap<string, GoogleCalendar>,
+  opts: GoogleConvertOptions,
+): string | null {
+  const uid = ev.iCalUID || ev.id;
+  if (!uid) return null;
+  let key = uid;
+  if (ev.recurringEventId && ev.originalStartTime) {
+    const orig = toEpoch(ev.originalStartTime, opts.timeZone, 0);
+    if (orig != null) key = `${uid}@${orig}`;
+  }
+  if (ev.calendarId && !calendars.get(ev.calendarId)?.primary) {
+    key = `google:${JSON.stringify([ev.calendarId, key])}`;
+  }
+  return key;
+}
+
+/**
+ * The events Google reports as cancelled or deleted (the feed asks for them
+ * explicitly). Their reminders are removed on the calendar's word rather than
+ * by guessing from an event's absence, which is what makes a check safe to run
+ * when the feed might be incomplete.
+ */
+export function googleCancelledKeys(feed: GoogleFeed, opts: GoogleConvertOptions): string[] {
+  const calendars = new Map((feed.calendars ?? []).map((cal) => [cal.id, cal]));
+  const out = new Set<string>();
+  for (const ev of feed.events ?? []) {
+    if (!ev || typeof ev !== "object" || ev.status !== "cancelled") continue;
+    if (skipGoogleEventForever(ev)) continue;
+    const key = googleEventKey(ev, calendars, opts);
+    if (key) out.add(key);
+  }
+  return [...out];
 }
 
 export function googleFeedToCalendarEvents(
@@ -230,8 +285,7 @@ export function googleFeedToCalendarEvents(
   const out: CalendarEvent[] = [];
   for (const ev of feed.events) {
     if (!ev || typeof ev !== "object" || skipGoogleEvent(ev)) continue;
-    const uid = ev.iCalUID || ev.id;
-    if (!uid || !ev.start) continue;
+    if (!ev.start) continue;
 
     const allDay = !ev.start.dateTime && !!ev.start.date;
     const start = toEpoch(ev.start, opts.timeZone, allDay ? ALL_DAY_HOUR : 0);
@@ -250,18 +304,12 @@ export function googleFeedToCalendarEvents(
       end = toEpoch(ev.end, opts.timeZone, 0) ?? start;
       if (end < start) end = start;
     }
-    if (end <= opts.from || start >= opts.to) continue;
+    const from = opts.from ?? 0;
+    const to = opts.to ?? Number.MAX_SAFE_INTEGER;
+    if (end <= from || start >= to) continue;
 
-    let key = uid;
-    if (ev.recurringEventId && ev.originalStartTime) {
-      const orig = toEpoch(ev.originalStartTime, opts.timeZone, 0);
-      if (orig != null) key = `${uid}@${orig}`;
-    }
-
-    const calendar = ev.calendarId ? calendars.get(ev.calendarId) : undefined;
-    if (ev.calendarId && !calendar?.primary) {
-      key = `google:${JSON.stringify([ev.calendarId, key])}`;
-    }
+    const key = googleEventKey(ev, calendars, opts);
+    if (!key) continue;
 
     out.push({
       key,
@@ -273,7 +321,9 @@ export function googleFeedToCalendarEvents(
       allDay,
       color: googleEventColor(
         ev,
-        calendar ? googleCalendarColor(calendar) : calColor,
+        ev.calendarId && calendars.get(ev.calendarId)
+          ? googleCalendarColor(calendars.get(ev.calendarId))
+          : calColor,
         ev.eventLabelId ? labelsFor(ev.calendarId) : null,
       ),
     });

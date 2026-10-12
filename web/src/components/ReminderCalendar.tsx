@@ -1,18 +1,18 @@
 import { useState } from "react";
 import {
   buildCalendarMonth,
+  DEFAULT_REMINDER_COLOR,
   filterRemindersByColor,
   getReminderColor,
-  isHexColor,
   itemTitle,
   localDateKey,
-  REMINDER_COLORS,
+  normalizeReminderColor,
   truncate,
   type Note,
   type ReminderColorId,
   type Section,
 } from "@pocketed/shared";
-import { extraReminderColors, reminderColorCounts } from "../view-model";
+import { colorsInUse, reminderColorCounts } from "../view-model";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = [
@@ -58,12 +58,13 @@ export function ReminderCalendar({
   const [listMode, setListMode] = useState<"day" | "all">("day");
 
   const counts = reminderColorCounts(notes);
-  // Pocketed's six colours, then any exact Google Calendar colours in use.
-  const extras = extraReminderColors(notes);
-  if (isHexColor(colorFilter) && !extras.some((c) => c.id === colorFilter)) {
-    extras.push(getReminderColor(colorFilter));
+  // One chip per colour your reminders actually use (Google Calendar's shades),
+  // plus the one being filtered by, so the bar stays short.
+  const chipColors = colorsInUse(notes);
+  const activeColor = colorFilter === "all" ? null : normalizeReminderColor(colorFilter);
+  if (activeColor && !chipColors.some((c) => c.id === activeColor)) {
+    chipColors.push(getReminderColor(activeColor));
   }
-  const chipColors = [...REMINDER_COLORS, ...extras];
   const calendarDays = buildCalendarMonth(
     viewYear,
     viewMonth,
@@ -281,7 +282,7 @@ export function ReminderCalendar({
             onClick={() =>
               onQuickAddReminderForDate(
                 defaultTimeForSelectedDate(),
-                colorFilter === "all" ? "amber" : colorFilter,
+                colorFilter === "all" ? DEFAULT_REMINDER_COLOR : colorFilter,
               )
             }
           >

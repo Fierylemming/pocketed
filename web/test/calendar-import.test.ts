@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { calendarNoteId, type GoogleFeed, type Op } from "@pocketed/shared";
+import {
+  calendarNoteId,
+  deleteNote,
+  MAX_IMPORTED_EVENTS,
+  type GoogleFeed,
+  type Op,
+} from "@pocketed/shared";
 import { SyncManager } from "../src/store";
 import {
   importCalendarNow,
@@ -86,7 +92,7 @@ describe("importCalendarNow", () => {
     );
     const m = manager();
     const r = await importCalendarNow(m);
-    expect(r).toEqual({ added: 1, updated: 0, removed: 0 });
+    expect(r).toMatchObject({ added: 1, updated: 0, removed: 0 });
     const n = m.state.notes[calendarNoteId("dentist@g")];
     expect(n).toMatchObject({ title: "Dentist", alertBefore: 30, source: "gcal" });
     expect(importedCount(m.state)).toBe(1);
@@ -106,7 +112,7 @@ describe("importCalendarNow", () => {
     localStorage.removeItem("pocketed.v2.state"); // a different device
     const b = manager();
     const r = await importCalendarNow(b);
-    expect(r).toEqual({ added: 0, updated: 0, removed: 0 });
+    expect(r).toMatchObject({ added: 0, updated: 0, removed: 0 });
     await b.syncOnce();
     expect(server.srv.log.length).toBe(before);
   });
@@ -141,7 +147,7 @@ describe("importCalendarNow", () => {
     const m = manager();
     await importCalendarNow(m);
     const id = calendarNoteId("gym@google.com");
-    expect(m.state.notes[id].color).toBe("sky");
+    expect(m.state.notes[id].color).toBe("#039be5"); // Peacock: no colours in a secret link
 
     // …then signed in with Google: same reminder, now in Google's Basil green.
     server.srv.google = {
@@ -164,7 +170,7 @@ describe("importCalendarNow", () => {
       ],
     };
     const r = await importCalendarNow(m);
-    expect(r).toEqual({ added: 1, updated: 1, removed: 0 });
+    expect(r).toMatchObject({ added: 1, updated: 1, removed: 0 });
     expect(m.state.notes[id].color).toBe("#0b8043");
     expect(m.state.notes[calendarNoteId("lunch@google.com")]).toMatchObject({
       title: "Lunch",
@@ -213,7 +219,7 @@ describe("importCalendarNow", () => {
     };
     server.srv.google = feed;
     const m = manager();
-    expect(await importCalendarNow(m)).toEqual({ added: 3, updated: 0, removed: 0 });
+    expect(await importCalendarNow(m)).toMatchObject({ added: 3, updated: 0, removed: 0 });
     expect(m.state.notes[calendarNoteId('google:["family-id","avocado@google.com"]')].color).toBe("#c0ca33");
     expect(m.state.notes[calendarNoteId('google:["family-id","custom@google.com"]')].color).toBe("#7c54c0");
     expect(m.state.notes[calendarNoteId('google:["family-id","plain@google.com"]')].color).toBe("#0b8043");
@@ -240,7 +246,7 @@ describe("importCalendarNow", () => {
     };
     server.srv.google = feed;
     const m = manager();
-    expect(await importCalendarNow(m)).toEqual({ added: 2, updated: 0, removed: 0 });
+    expect(await importCalendarNow(m)).toMatchObject({ added: 2, updated: 0, removed: 0 });
     expect(importedCount(m.state)).toBe(2);
     expect(m.state.notes[calendarNoteId(event.iCalUID)].color).toBe("#039be5");
     expect(Object.values(m.state.notes).find((n) => n.title === "Family appointment")?.color).toBe("#0b8043");
@@ -250,20 +256,149 @@ describe("importCalendarNow", () => {
     // A second device uses the same calendar-scoped IDs, without duplicates.
     localStorage.removeItem("pocketed.v2.state");
     const second = manager();
-    expect(await importCalendarNow(second)).toEqual({ added: 0, updated: 0, removed: 0 });
+    expect(await importCalendarNow(second)).toMatchObject({ added: 0, updated: 0, removed: 0 });
     const before = JSON.stringify(second.state.notes);
     server.srv.feed.status = 502;
     await expect(importCalendarNow(second)).rejects.toThrow();
     expect(JSON.stringify(second.state.notes)).toBe(before);
     expect(loadCalendarState().lastError).toBeTruthy();
 
-    // A successful snapshot after unsubscribing removes only that calendar.
+    // A calendar that drops out of the feed keeps its reminders while its
+    // events are still to come — the app doesn't read "absent" as "cancelled".
     server.srv.feed.status = 200;
     feed.calendars = feed.calendars!.filter((c) => c.primary);
     feed.events = feed.events.filter((e) => e.calendarId === "primary-id");
-    expect(await importCalendarNow(second)).toEqual({ added: 0, updated: 0, removed: 1 });
+    expect(await importCalendarNow(second)).toMatchObject({ removed: 0, kept: 1 });
+    expect(importedCount(second.state)).toBe(2);
+
+    // Once that event has started and is still missing, its reminder goes.
+    vi.setSystemTime(NOW + 3 * 24 * 60 * 60 * 1000);
+    expect(await importCalendarNow(second)).toMatchObject({ removed: 1 });
     expect(importedCount(second.state)).toBe(1);
     expect(second.state.notes[calendarNoteId(event.iCalUID)].title).toBe("Appointment");
+  });
+
+  it("removes a cancelled event's reminder as soon as the calendar says so", async () => {
+    const at = (hours: number) => new Date(NOW + hours * 3_600_000).toISOString();
+    server.srv.google = {
+      source: "google",
+      calendar: {},
+      events: [
+        { iCalUID: "lunch@google.com", summary: "Lunch", start: { dateTime: at(24) }, end: { dateTime: at(25) } },
+        { iCalUID: "later@google.com", summary: "Later", start: { dateTime: at(48) }, end: { dateTime: at(49) } },
+      ],
+    };
+    const m = manager();
+    await importCalendarNow(m);
+    const id = calendarNoteId("lunch@google.com");
+    expect(m.state.notes[id].deleted).toBe(false);
+
+    // Google reports it cancelled (as it does for an event deleted in Google).
+    server.srv.google = {
+      source: "google",
+      calendar: {},
+      events: [
+        { iCalUID: "lunch@google.com", status: "cancelled" },
+        { iCalUID: "later@google.com", summary: "Later", start: { dateTime: at(48) }, end: { dateTime: at(49) } },
+      ],
+    };
+    const r = await importCalendarNow(m);
+    expect(r).toMatchObject({ added: 0, updated: 0, removed: 1 });
+    expect(m.state.notes[id].deleted).toBe(true);
+    await m.syncOnce();
+    expect(server.srv.log.find((o) => o.noteId === id && o.kind === "delete")).toBeTruthy();
+  });
+
+  it("keeps everything when a feed comes back empty, and says how much it kept", async () => {
+    server.srv.feed.body = ics(
+      ["one@g", "One", "20261012T090000Z", "20261012T100000Z"],
+      ["two@g", "Two", "20261013T090000Z", "20261013T100000Z"],
+    );
+    const m = manager();
+    await importCalendarNow(m);
+    expect(importedCount(m.state)).toBe(2);
+
+    // Every event has started, and the feed lists nothing at all: that is a
+    // failed or partial check, not a calendar that emptied itself.
+    vi.setSystemTime(NOW + 40 * 24 * 60 * 60 * 1000);
+    server.srv.feed.body = ics(["old@g", "Old", "20250101T090000Z", "20250101T100000Z"]);
+    const r = await importCalendarNow(m);
+    expect(r).toMatchObject({ added: 0, removed: 0, kept: 2 });
+    expect(importedCount(m.state)).toBe(2);
+    expect(loadCalendarState().lastCounts).toMatchObject({ kept: 2 });
+  });
+
+  it("keeps the reminders a feed clipped by the import cap didn't mention", async () => {
+    server.srv.feed.body = ics(["old@g", "Old", "20261012T090000Z", "20261012T100000Z"]);
+    const m = manager();
+    await importCalendarNow(m);
+
+    // A feed as long as the cap may have been cut short, so the app can't know
+    // what came after it.
+    const at = (minutes: number) => {
+      const d = new Date(NOW + minutes * 60_000);
+      const p = (n: number) => String(n).padStart(2, "0");
+      return (
+        `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}` +
+        `T${p(d.getUTCHours())}${p(d.getUTCMinutes())}00Z`
+      );
+    };
+    server.srv.feed.body = ics(
+      ...Array.from({ length: MAX_IMPORTED_EVENTS }, (_, i) => [
+        `ev${i}@g`,
+        `Event ${i}`,
+        at(i + 1),
+        at(i + 2),
+      ] as [string, string, string, string]),
+    );
+    const r = await importCalendarNow(m);
+    expect(r).toMatchObject({ added: MAX_IMPORTED_EVENTS, removed: 0, kept: 1 });
+  });
+
+  it("keeps reminders when the feed changes source, then tidies up once it knows the new one", async () => {
+    // An event already under way, so a trusted same-source check would sweep it.
+    server.srv.feed.body = ics(["now@g", "Happening now", "20261010T070000Z", "20261010T100000Z"]);
+    const m = manager();
+    await importCalendarNow(m);
+    const id = calendarNoteId("now@g");
+    expect(m.state.notes[id].deleted).toBe(false);
+    expect(loadCalendarState().source).toBe("link");
+
+    // Signing in with Google: this feed covers every calendar, but the app has
+    // no idea yet whether it covers what the secret link did, so nothing goes.
+    const other = { iCalUID: "other@g", summary: "Other", start: { dateTime: new Date(NOW + 86_400_000).toISOString() } };
+    server.srv.google = { source: "google", calendar: {}, events: [other] };
+    expect(await importCalendarNow(m)).toMatchObject({ added: 1, removed: 0, kept: 1 });
+    expect(m.state.notes[id].deleted).toBe(false);
+    expect(loadCalendarState().source).toBe("google");
+
+    // Checked twice from the same source: now the app may tidy up.
+    expect(await importCalendarNow(m)).toMatchObject({ removed: 1, kept: 0 });
+    expect(m.state.notes[id].deleted).toBe(true);
+  });
+
+  it("brings back reminders a bad check removed in bulk", async () => {
+    server.srv.feed.body = ics(
+      ["a@g", "A", "20261012T090000Z", "20261012T100000Z"],
+      ["b@g", "B", "20261013T090000Z", "20261013T100000Z"],
+    );
+    const m = manager();
+    await importCalendarNow(m);
+    await m.syncOnce();
+
+    // What the phone did: a check that saw nothing took both reminders away at
+    // the same instant, and those deletions synced to every other device.
+    const at = Date.now() + 1000;
+    m.mutate((s) =>
+      deleteNote(deleteNote(s, calendarNoteId("a@g"), at), calendarNoteId("b@g"), at),
+    );
+    expect(importedCount(m.state)).toBe(0);
+
+    // The next check finds the events, so the reminders come back.
+    const r = await importCalendarNow(m);
+    expect(r).toMatchObject({ restored: 2, added: 0 });
+    expect(importedCount(m.state)).toBe(2);
+    expect(m.state.notes[calendarNoteId("a@g")]).toMatchObject({ title: "A", deleted: false });
   });
 
 });

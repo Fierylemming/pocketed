@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { calendarNoteId } from "@pocketed/shared";
 import {
   CalendarParseError,
   cleanDescription,
   parseCalendar,
+  parseCalendarDetailed,
   prefilter,
   zonedToEpoch,
 } from "../src/ical";
@@ -104,6 +106,57 @@ describe("parseCalendar", () => {
     );
     expect(out[0].start).toBe(Date.UTC(2026, 9, 15, 14, 0));
     expect(out[0].title).toBe("A very long meeting title that Google folds onto a second line");
+  });
+
+  it("reports cancelled events instead of importing them, including one instance of a repeat", () => {
+    const parsed = parseCalendarDetailed(
+      feed(
+        ev([
+          "DTSTART:20261012T100000Z",
+          "DTEND:20261012T110000Z",
+          "UID:keep@g",
+          "SUMMARY:Keep me",
+          "STATUS:CONFIRMED",
+        ]),
+        ev([
+          "DTSTART:20261013T100000Z",
+          "DTEND:20261013T110000Z",
+          "UID:gone@g",
+          "SUMMARY:Gone",
+          "STATUS:CANCELLED",
+        ]),
+        ev([
+          "DTSTART:20261012T120000Z",
+          "DTEND:20261012T130000Z",
+          "UID:series@g",
+          "SUMMARY:Series",
+          "RRULE:FREQ=DAILY;COUNT=3",
+        ]),
+        ev([
+          "RECURRENCE-ID:20261013T120000Z",
+          "DTSTART:20261013T120000Z",
+          "DTEND:20261013T130000Z",
+          "UID:series@g",
+          "SUMMARY:Series",
+          "STATUS:CANCELLED",
+        ]),
+      ),
+      opts,
+    );
+    const day12 = Date.UTC(2026, 9, 12, 12, 0);
+    const day13 = Date.UTC(2026, 9, 13, 12, 0); // the cancelled instance
+    const day14 = Date.UTC(2026, 9, 14, 12, 0);
+    expect(parsed.events.map((e) => e.key)).toEqual([
+      "keep@g",
+      `series@g@${day12}`,
+      `series@g@${day14}`,
+    ]);
+    expect(parsed.cancelledKeys).toEqual(["gone@g", `series@g@${day13}`]);
+    // The keys are the ones the reminders were made with.
+    expect(parsed.cancelledKeys.map((k) => calendarNoteId(k))).toEqual([
+      calendarNoteId("gone@g"),
+      calendarNoteId(`series@g@${day13}`),
+    ]);
   });
 
   it("puts all-day events at 9:00 in the device's zone and ends them at midnight", () => {

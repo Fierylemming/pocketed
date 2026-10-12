@@ -61,10 +61,12 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - **Sections (Folders)** — create named sections on the home screen and click any section title to open its dedicated folder view.
 - **Two Separate Creation Buttons** — choose between **📝 New Note** and **⏰ New Reminder**:
   - **Notes** are large items with a title, large body, image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
-  - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour code.
+  - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour from Google Calendar's palette.
 - **Google Calendar import** — connect your calendar once and its events show up as reminders automatically
   (see below).
-- **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded across a curated 6-colour palette (Ruby, Amber, Emerald, Sky, Violet, Rose) with one-click colour filtering.
+- **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded
+  in **Google Calendar's palette** (Tomato, Basil, Peacock, Avocado…), with one-click colour filtering. The filter
+  lists the colours your reminders actually use, so it stays short.
 
 ## Reminders: what to expect
 
@@ -92,20 +94,28 @@ There are two ways to connect:
   (SETUP.md, step 8). Until then the button doesn't appear.
 - **Secret link**: on a computer, open **calendar.google.com** → ⚙️ **Settings** → under **Settings for my
   calendars** click your calendar → **Integrate calendar** → copy **Secret address in iCal format**, then
-  paste it into Pocketed. A secret link imports **only that one calendar** and carries no colours, so these reminders are **Sky**.
+  paste it into Pocketed. A secret link imports **only that one calendar** and carries no colours, so these reminders are **Peacock** (blue).
 
 What happens:
 
 - Events in the **next 60 days** become reminders, labelled 📅 Google Calendar (up to the earliest 500 across all calendars).
-- **Colours** (with Sign in with Google): an event keeps the colour you gave it in Google — any of Google's
-  24 colours (Tomato, Sage, Basil, Avocado…), including custom shades mixed in Google's colour picker.
-  Events without their own colour take the calendar's colour. Google's colours appear as extra chips
-  in the calendar's colour filter, next to Pocketed's six. Changing an event's colour in Google updates the
-  reminder.
+- **Colours**: a reminder keeps the colour you gave it in Google — any of Google's 24 colours (Tomato, Sage,
+  Basil, Avocado…), including custom shades mixed in Google's colour picker. Events without their own colour take
+  the calendar's colour. Some colours come with Sign in with Google (a secret link carries none), but the colour
+  picker on your own reminders offers the same palette, so everything matches. Changing an event's colour in
+  Google updates the reminder.
+- Pocketed's earlier six colours (Ruby, Amber, Emerald, Sky, Violet, Rose) are gone: reminders that used them show
+  the closest Google shade — Ruby as Flamingo, Emerald as Eucalyptus, and so on.
 - Timed events alert **30 minutes before** ("⏰ In 30 min") and again **when they start** ("📅 Starting now").
   All-day events alert once, at 9:00 on the day.
 - Repeating events are added one occurrence at a time; skipped, moved and cancelled occurrences are respected.
   With Sign in with Google, invitations you declined and "working location" markers are left out.
+- **A check never deletes reminders it can't vouch for.** An event you cancel or delete in Google removes its
+  reminder straight away, because the calendar says so. Everything else is only removed once the event has
+  *started* and is no longer on the calendar — an event still to come is never removed just because it wasn't in
+  one feed, and a check that comes back empty, cut short, or from a different calendar source changes nothing
+  but says so in Settings. Reminders a check did remove in bulk come back by themselves on the next check if the
+  calendar still has the events.
 - Pocketed checks the calendar **shortly after it opens, then every 15 minutes while it's on screen** (hourly in
   the background), or straight away with **Check now**. Changes sync to your other devices as usual.
 - An event changed in Google updates its reminder; any section or pin you set yourself stays. Your own colour

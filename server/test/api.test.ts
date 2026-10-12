@@ -194,7 +194,7 @@ describe("sync api", () => {
       body: "Weekly standup",
       text: "Team Sync\nWeekly standup",
       location: "Room 4B",
-      color: "violet",
+      color: "violet", // a name from Pocketed's retired palette: still accepted
       sectionId: "sec-work",
       reminderAt: 200_000,
       updatedAt: 101,

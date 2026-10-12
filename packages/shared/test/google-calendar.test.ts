@@ -2,14 +2,19 @@ import { describe, expect, it } from "vitest";
 import { calendarNoteId, reconcileCalendar, type CalendarEvent } from "../src/calendar";
 import {
   googleCalendarColor,
+  googleCancelledKeys,
   googleEventColor,
   googleEventLabels,
   googleFeedToCalendarEvents,
   type GoogleFeed,
 } from "../src/google-calendar";
 import {
+  CALENDAR_REMINDER_COLOR,
+  DEFAULT_REMINDER_COLOR,
   getReminderColor,
+  isHexColor,
   isValidReminderColor,
+  REMINDER_COLORS,
   validateOp,
   type Op,
 } from "../src/protocol";
@@ -26,12 +31,18 @@ function feed(events: GoogleFeed["events"], calendar: GoogleFeed["calendar"] = {
 }
 
 describe("colour values", () => {
-  it("accept exact hex colours alongside the six named ones", () => {
-    expect(isValidReminderColor("sky")).toBe(true);
+  it("accepts exact hex colours, plus the six retired names old reminders carry", () => {
     expect(isValidReminderColor("#d50000")).toBe(true);
+    expect(isValidReminderColor("#c0ca33")).toBe(true);
+    // Pocketed's pre-Google palette: kept so old reminders (and an older copy
+    // of the app still open on a phone) keep syncing.
+    expect(isValidReminderColor("sky")).toBe(true);
+    expect(isValidReminderColor("rose")).toBe(true);
     expect(isValidReminderColor("#D50000")).toBe(false); // stored lowercase
     expect(isValidReminderColor("#fff")).toBe(false);
     expect(isValidReminderColor("red")).toBe(false);
+    expect(isValidReminderColor("tomato")).toBe(false); // names, not Google's names
+    expect(isValidReminderColor("toString")).toBe(false); // no prototype keys
     const op = {
       id: "o1",
       kind: "upsert",
@@ -45,6 +56,18 @@ describe("colour values", () => {
     expect(validateOp(op)).toBeNull();
   });
 
+  it("are Google Calendar's palette: the six old names are no longer offered", () => {
+    expect(REMINDER_COLORS).toHaveLength(24);
+    expect(REMINDER_COLORS.map((c) => c.label)).toEqual(
+      expect.arrayContaining(["Tomato", "Peacock", "Avocado", "Graphite"]),
+    );
+    expect(REMINDER_COLORS.every((c) => isHexColor(c.id))).toBe(true);
+    expect(REMINDER_COLORS.some((c) => c.id === "sky")).toBe(false);
+    expect(REMINDER_COLORS.some((c) => c.id === "amber")).toBe(false);
+    expect(DEFAULT_REMINDER_COLOR).toBe("#f6bf26"); // Banana
+    expect(CALENDAR_REMINDER_COLOR).toBe("#039be5"); // Peacock
+  });
+
   it("show Google's names and a tinted background", () => {
     expect(getReminderColor("#d50000")).toEqual({
       id: "#d50000",
@@ -54,7 +77,10 @@ describe("colour values", () => {
       border: "#d50000",
     });
     expect(getReminderColor("#123456").label).toBe("Custom");
-    expect(getReminderColor("sky").label).toBe("Sky");
+    // A retired name reads as the Google shade closest to it.
+    expect(getReminderColor("sky")).toMatchObject({ id: "#039be5", label: "Peacock" });
+    expect(getReminderColor("ruby")).toMatchObject({ id: "#e67c73", label: "Flamingo" });
+    expect(getReminderColor(null)).toMatchObject({ id: "#f6bf26", label: "Banana" });
   });
 
   it("filter by exact colour", () => {
@@ -239,12 +265,81 @@ describe("Google events -> calendar events", () => {
     }, opts), NOW + 2);
     expect(again).toMatchObject({ added: 0, updated: 0, removed: 0 });
 
-    // Removing access/subscription to one calendar removes only its reminders.
+    // A calendar that drops out of the feed doesn't cost its reminders: the
+    // event is still to come, so the reminder stays until it has started.
     const remaining = googleFeedToCalendarEvents({
       ...multi, events: multi.events.filter((e) => e.calendarId !== "family"),
     }, opts);
-    expect(reconcileCalendar(imported.state, remaining, NOW + 3))
-      .toMatchObject({ added: 0, updated: 0, removed: 1 });
+    const kept = reconcileCalendar(imported.state, remaining, NOW + 3);
+    expect(kept).toMatchObject({ added: 0, updated: 0, removed: 0, kept: 1 });
+    const familyKey = converted.find((e) => e.key.includes('"family"'))!.key;
+    expect(kept.state.notes[calendarNoteId(familyKey)].deleted).toBe(false);
+
+    // Once that event has started and the calendar still doesn't list it, its
+    // reminder goes like any other event that's over.
+    expect(reconcileCalendar(kept.state, remaining, NOW + 3 * DAY))
+      .toMatchObject({ removed: 1, kept: 0 });
+  });
+
+  it("keeps the rest of the window when the feed doesn't say where it ends", () => {
+    // The server cuts the feed to the upcoming window with its own clock, so
+    // the app passes no window of its own: nothing is dropped for being far off.
+    const at = (uid: string, days: number) => ({
+      iCalUID: uid,
+      start: { dateTime: new Date(NOW + days * DAY).toISOString() },
+      end: { dateTime: new Date(NOW + days * DAY + 3_600_000).toISOString() },
+    });
+    const events = [at("soon", 1), at("later", 30), at("latest", 59)];
+    expect(
+      googleFeedToCalendarEvents(feed(events), { timeZone: "Europe/London" }).map((e) => e.key),
+    ).toEqual(["soon", "later", "latest"]);
+    // …whereas an explicit window still filters, for callers that want one.
+    expect(
+      googleFeedToCalendarEvents(feed(events), { ...opts, to: NOW + 7 * DAY }).map((e) => e.key),
+    ).toEqual(["soon"]);
+  });
+
+  it("collects the events Google reports as cancelled or deleted, and their exact keys", () => {
+    const event = {
+      iCalUID: "same@google.com", summary: "Shared appointment",
+      start: { dateTime: "2026-10-12T10:00:00Z" },
+      end: { dateTime: "2026-10-12T11:00:00Z" },
+    };
+    const cancelled: GoogleFeed = {
+      source: "google",
+      calendar: { colorId: "14" },
+      calendars: [{ id: "me", primary: true, colorId: "14" }, { id: "family", colorId: "8" }],
+      events: [
+        { iCalUID: "one-off@google.com", status: "cancelled" },
+        {
+          iCalUID: "rep@google.com",
+          status: "cancelled",
+          recurringEventId: "rep@google.com",
+          originalStartTime: { dateTime: "2026-10-12T10:00:00Z" },
+        },
+        { iCalUID: "fam@google.com", status: "cancelled", calendarId: "family" },
+        { iCalUID: "wfh@google.com", status: "cancelled", eventType: "workingLocation" },
+        {
+          iCalUID: "declined@google.com",
+          status: "cancelled",
+          attendees: [{ self: true, responseStatus: "declined" }],
+        },
+        { ...event, calendarId: "me" }, // still on: not a cancellation
+      ],
+    };
+    expect(googleCancelledKeys(cancelled, opts)).toEqual([
+      "one-off@google.com",
+      `rep@google.com@${Date.UTC(2026, 9, 12, 10, 0)}`,
+      `google:${JSON.stringify(["family", "fam@google.com"])}`,
+    ]);
+    // The keys match what the importer would have called those reminders.
+    expect(calendarNoteId(googleCancelledKeys(cancelled, opts)[0])).toBe(
+      calendarNoteId("one-off@google.com"),
+    );
+    // Only the event that is still on becomes a reminder.
+    expect(googleFeedToCalendarEvents(cancelled, opts).map((e) => e.key)).toEqual([
+      "same@google.com",
+    ]);
   });
 
   it("resolves an event's label against its own calendar, falling back when unknown", () => {
@@ -364,7 +459,7 @@ describe("reconcile with Google colours", () => {
   it("switching from the secret link to Google recolours instead of duplicating", () => {
     const { color: _c, ...noColour } = base;
     let r = reconcileCalendar(emptyState(), [noColour], NOW);
-    expect(r.state.notes[id].color).toBe("sky");
+    expect(r.state.notes[id].color).toBe("#039be5");
     r = reconcileCalendar(r.state, [base], NOW + 1);
     expect(r).toMatchObject({ added: 0, updated: 1, removed: 0 });
     expect(r.state.notes[id].color).toBe("#0b8043");

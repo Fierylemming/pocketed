@@ -164,8 +164,14 @@ function changes(r: ImportCounts): string {
     r.added ? `${r.added} added` : "",
     r.updated ? `${r.updated} updated` : "",
     r.removed ? `${r.removed} removed` : "",
+    r.restored ? `${r.restored} brought back` : "",
   ].filter(Boolean);
-  return parts.length ? parts.join(", ") + "." : "No changes.";
+  // A check that couldn't see the whole calendar says so, rather than looking
+  // as if events had merely been deleted.
+  const kept = r.kept
+    ? ` ${plural(r.kept, "reminder")} left as ${r.kept === 1 ? "it was" : "they were"} — this check couldn't see the whole calendar.`
+    : "";
+  return (parts.length ? parts.join(", ") + "." : "No changes.") + kept;
 }
 
 function GoogleCalendar({ manager }: { manager: SyncManager }) {
@@ -213,8 +219,9 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
     void (async () => {
       try {
         const r = await importCalendarNow(manager);
+        const restored = r.restored ? ` ${plural(r.restored, "reminder")} brought back.` : "";
         setMsg(
-          `Signed in with Google. ${plural(r.added + r.updated, "event")} imported with their colours.`,
+          `Signed in with Google. ${plural(r.added + r.updated, "event")} imported with their colours.${restored}`,
         );
       } catch (e2) {
         setMsg(null);
@@ -241,7 +248,8 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
       setShowLink(false);
       try {
         const r = await importCalendarNow(manager);
-        setMsg(`Connected. ${plural(r.added + r.updated, "event")} imported.`);
+        const restored = r.restored ? ` ${plural(r.restored, "reminder")} brought back.` : "";
+        setMsg(`Connected. ${plural(r.added + r.updated, "event")} imported.${restored}`);
       } catch (e2) {
         setErr(e2 instanceof Error ? e2.message : "Connected, but the first import failed.");
       }
@@ -444,6 +452,11 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
           <p className="muted small">
             {plural(imported, "upcoming event")} · alerts {lead} min before and at the start ·{" "}
             {local.lastCheck ? `checked ${ago(local.lastCheck)}` : "not checked on this device yet"}
+          </p>
+          <p className="muted small">
+            A check only ever removes a reminder for an event the calendar reports as cancelled, or
+            one that has already started and is no longer on the calendar. If it can't see the whole
+            calendar, it changes nothing.
           </p>
           {status.problem ? (
             <>

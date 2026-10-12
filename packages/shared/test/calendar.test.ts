@@ -7,9 +7,11 @@ import {
   type CalendarEvent,
 } from "../src/calendar";
 import {
+  addSection,
   applyRemote,
   createReminderItem,
   deleteNote,
+  deleteSection,
   emptyState,
   markReminderDone,
   updateItem,
@@ -76,7 +78,7 @@ describe("reconcileCalendar", () => {
       reminderAt: dentist.start,
       repeat: "none",
       alertBefore: 30,
-      color: "sky",
+      color: "#039be5", // no colour of its own: the calendar's own default
       source: "gcal",
     });
     expect(r.state.notes[idOf(party)].location).toBeNull();
@@ -134,13 +136,87 @@ describe("reconcileCalendar", () => {
     expect(r.state.notes[idOf(dentist)].reminderAt).toBe(dentist.start + H);
   });
 
-  it("removes cancelled and ended events, and done ones once they're over", () => {
-    let s = reconcileCalendar(emptyState(), [dentist, party, birthday], NOW).state;
-    s = markReminderDone(s, idOf(birthday), NOW + 1);
-    // party cancelled; birthday has passed (no longer in the feed's upcoming list)
-    const r = reconcileCalendar(s, [dentist], NOW + 2);
-    expect(r.removed).toBe(2);
+  it("removes a cancelled event's reminder as soon as the calendar says so", () => {
+    const s = reconcileCalendar(emptyState(), [dentist, party], NOW).state;
+    const r = reconcileCalendar(s, [dentist], NOW + 1, { cancelledKeys: [party.key] });
+    expect(r.removed).toBe(1);
     expect(imported(r.state).map((n) => n.title)).toEqual(["Dentist"]);
+  });
+
+  it("removes a reminder whose event has started and left the calendar, even once you cleared it", () => {
+    const past = { ...birthday, start: NOW - 5 * DAY, end: NOW - 4 * DAY };
+    let s = reconcileCalendar(emptyState(), [past, dentist], NOW).state;
+    s = markReminderDone(s, idOf(past), NOW + 1);
+    const r = reconcileCalendar(s, [dentist], NOW + 2);
+    expect(r.removed).toBe(1);
+    expect(imported(r.state).map((n) => n.title)).toEqual(["Dentist"]);
+  });
+
+  it("keeps a reminder for an event still to come when the feed doesn't list it", () => {
+    // The event may just not have been in this check's feed; taking the
+    // reminder away would be a guess, so it stays until the event has started.
+    const s = reconcileCalendar(emptyState(), [dentist, party], NOW).state;
+    const r = reconcileCalendar(s, [dentist], NOW + 1);
+    expect(r).toMatchObject({ removed: 0, kept: 1 });
+    expect(imported(r.state).map((n) => n.title)).toEqual(["Dentist", "Party"]);
+  });
+
+  it("removes nothing at all when the check isn't trusted with the whole calendar", () => {
+    const past = { ...birthday, start: NOW - 5 * DAY, end: NOW - 4 * DAY };
+    const s = reconcileCalendar(emptyState(), [past, dentist], NOW).state;
+    // A partial feed (sweep off), and an empty one, both leave everything.
+    expect(reconcileCalendar(s, [dentist], NOW + 1, { sweep: false })).toMatchObject({
+      removed: 0,
+      kept: 1,
+    });
+    expect(reconcileCalendar(s, [], NOW + 1)).toMatchObject({ removed: 0 });
+    expect(imported(reconcileCalendar(s, [], NOW + 1).state)).toHaveLength(2);
+  });
+
+  it("brings back reminders a check removed in bulk, when the calendar still has the events", () => {
+    const T = NOW + 1;
+    let s = reconcileCalendar(emptyState(), [dentist, party], NOW).state;
+    // Your own section and pin are part of the reminder, not of the check.
+    s = updateItem(s, idOf(dentist), { sectionId: "health", pinned: true }, NOW + 1);
+    // What a check that saw nothing did: remove them, all in the same instant.
+    s = deleteNote(s, idOf(dentist), T);
+    s = deleteNote(s, idOf(party), T);
+    const r = reconcileCalendar(s, [dentist, party], T + 1);
+    expect(r.restored).toBe(2);
+    expect(imported(r.state).map((n) => n.title)).toEqual(["Dentist", "Party"]);
+    expect(r.state.notes[idOf(dentist)]).toMatchObject({
+      reminderAt: dentist.start,
+      sectionId: "health",
+      pinned: true,
+    });
+    // And once they're back, they stay back.
+    expect(reconcileCalendar(r.state, [dentist, party], T + 2)).toMatchObject({
+      restored: 0,
+      added: 0,
+      updated: 0,
+      removed: 0,
+    });
+  });
+
+  it("leaves reminders you deleted by hand deleted", () => {
+    let s = reconcileCalendar(emptyState(), [dentist, party], NOW).state;
+    // Two taps, two instants: not a check, so not a mistake to undo.
+    s = deleteNote(s, idOf(dentist), NOW + 1);
+    s = deleteNote(s, idOf(party), NOW + 2);
+    const r = reconcileCalendar(s, [dentist, party], NOW + 3);
+    expect(r).toMatchObject({ restored: 0 });
+    expect(imported(r.state)).toHaveLength(0);
+  });
+
+  it("leaves reminders a deleted section took with it deleted", () => {
+    let s = reconcileCalendar(emptyState(), [dentist, party], NOW).state;
+    const { state, section } = addSection(s, "Health", NOW + 1);
+    s = updateItem(state, idOf(dentist), { sectionId: section.id }, NOW + 1);
+    s = updateItem(s, idOf(party), { sectionId: section.id }, NOW + 1);
+    s = deleteSection(s, section.id, NOW + 2); // section and notes, same instant
+    const r = reconcileCalendar(s, [dentist, party], NOW + 3);
+    expect(r).toMatchObject({ restored: 0 });
+    expect(imported(r.state)).toHaveLength(0);
   });
 
   it("works with what other devices did (dismissals sync)", () => {

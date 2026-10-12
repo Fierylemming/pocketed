@@ -23,6 +23,17 @@ import {
   type CalendarEvent,
 } from "@pocketed/shared";
 
+/** The upcoming events in a feed, plus the keys of the cancelled ones. */
+export interface ParsedCalendar {
+  events: CalendarEvent[];
+  /**
+   * Keys of events the feed marks STATUS:CANCELLED. They never become
+   * reminders, and any reminder already imported from them is removed on the
+   * feed's word (not by guessing from an absence).
+   */
+  cancelledKeys: string[];
+}
+
 // Re-exported for existing callers/tests.
 export { ALL_DAY_HOUR, cleanDescription, validZone, zonedToEpoch };
 
@@ -54,6 +65,11 @@ type ITime = InstanceType<typeof ICAL.Time>;
 type IEvent = InstanceType<typeof ICAL.Event>;
 
 export function parseCalendar(text: string, opts: ExpandOptions): CalendarEvent[] {
+  return parseCalendarDetailed(text, opts).events;
+}
+
+/** As parseCalendar(), also reporting the events the feed has cancelled. */
+export function parseCalendarDetailed(text: string, opts: ExpandOptions): ParsedCalendar {
   if (!looksLikeCalendar(text)) {
     throw new CalendarParseError("That link didn't return a calendar.");
   }
@@ -99,7 +115,7 @@ export function parseCalendar(text: string, opts: ExpandOptions): CalendarEvent[
     if (!masters.has(uid)) orphans.push(...list);
   }
 
-  const ctx: Ctx = { opts, floatingZone: zone, userZone: zone };
+  const ctx: Ctx = { opts, floatingZone: zone, userZone: zone, cancelledKeys: new Set() };
   const out: CalendarEvent[] = [];
   for (const [uid, ve] of masters) {
     try {
@@ -121,7 +137,7 @@ export function parseCalendar(text: string, opts: ExpandOptions): CalendarEvent[
   });
 
   out.sort((a, b) => a.start - b.start || a.key.localeCompare(b.key));
-  return out.slice(0, opts.maxEvents ?? 500);
+  return { events: out.slice(0, opts.maxEvents ?? 500), cancelledKeys: [...ctx.cancelledKeys] };
 }
 
 // ---- 1. cheap pre-filter on the raw text ----
@@ -209,6 +225,7 @@ interface Ctx {
   opts: ExpandOptions;
   floatingZone: string;
   userZone: string;
+  cancelledKeys: Set<string>;
 }
 
 function expandSeries(uid: string, master: Comp, overrides: Comp[], ctx: Ctx, out: CalendarEvent[]): void {
@@ -305,7 +322,10 @@ function pushOccurrence(
 ): void {
   const comp = item.component;
   const status = String(comp.getFirstPropertyValue("status") ?? "").toUpperCase();
-  if (status === "CANCELLED") return;
+  if (status === "CANCELLED") {
+    ctx.cancelledKeys.add(key);
+    return;
+  }
 
   const allDay = startDate.isDate;
   let start: number;

@@ -4,6 +4,7 @@
 import {
   DEFAULT_REMINDER_COLOR,
   itemTitle,
+  normalizeReminderColor,
   REPEAT_OPTIONS,
   type Note,
   type RepeatId,
@@ -148,8 +149,9 @@ export function localDateKey(ts: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** A reminder's colour as an exact shade (a retired name reads as its Google equivalent). */
 export function effectiveReminderColor(note: Note): ReminderColorId {
-  return note.color ?? DEFAULT_REMINDER_COLOR;
+  return normalizeReminderColor(note.color) ?? DEFAULT_REMINDER_COLOR;
 }
 
 /** Filters active reminders (items with a scheduled reminderAt) by colour. */
@@ -157,13 +159,17 @@ export function filterRemindersByColor(
   notes: Note[],
   colorFilter: ReminderColorId | "all",
 ): Note[] {
+  // Both sides read as exact shades, so a filter set before the palette changed
+  // (e.g. "sky") still finds the reminders coloured with it.
+  const wanted =
+    colorFilter === "all" ? "all" : (normalizeReminderColor(colorFilter) ?? colorFilter);
   return notes
     .filter(
       (n) =>
         !n.deleted &&
         typeof n.reminderAt === "number" &&
         n.reminderAt !== null &&
-        (colorFilter === "all" || effectiveReminderColor(n) === colorFilter),
+        (wanted === "all" || effectiveReminderColor(n) === wanted),
     )
     .sort((a, b) => (a.reminderAt as number) - (b.reminderAt as number));
 }
