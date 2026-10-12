@@ -141,7 +141,7 @@ describe("importCalendarNow", () => {
     const m = manager();
     await importCalendarNow(m);
     const id = calendarNoteId("gym@google.com");
-    expect(m.state.notes[id].color).toBe("sky");
+    expect(m.state.notes[id].color).toBe("#039be5"); // Peacock: no colours in a secret link
 
     // …then signed in with Google: same reminder, now in Google's Basil green.
     server.srv.google = {

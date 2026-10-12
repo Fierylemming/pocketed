@@ -20,6 +20,7 @@ import {
   itemTitle,
   LIMITS,
   markReminderDone,
+  normalizeReminderColor,
   quickReminders,
   renameSection,
   shortAgo,
@@ -48,12 +49,12 @@ import {
   reminderMeta,
   rowsFor,
   sectionCounts,
-  colorPickerChoices,
   sectionsFor,
   syncStatus,
   userSectionsFor,
 } from "../view-model";
 import { hasGoogleReturn } from "../google-return";
+import { ColorPicker } from "./ColorPicker";
 import { ReminderCalendar } from "./ReminderCalendar";
 import { ReminderPicker, type ReminderValue } from "./ReminderPicker";
 import { Settings } from "./Settings";
@@ -1153,7 +1154,9 @@ function ReminderComposer({
   const [body, setBody] = useState("");
   const [location, setLocation] = useState("");
   const [activeTab, setActiveTab] = useState<"due" | "location" | "color">("due");
-  const [color, setColor] = useState<ReminderColorId>(initialColor);
+  const [color, setColor] = useState<ReminderColorId>(
+    () => normalizeReminderColor(initialColor) ?? DEFAULT_REMINDER_COLOR,
+  );
   const [sectionId, setSectionId] = useState<string | null>(defaultSectionId);
   const [pickerKey, setPickerKey] = useState(0);
   const [rem, setRem] = useState<ReminderValue>(() => ({
@@ -1329,30 +1332,14 @@ function ReminderComposer({
       )}
 
       {activeTab === "color" && (
-        <div className="reminder-tab-panel color-picker-row" role="radiogroup" aria-label="Reminder colour">
-          {colorPickerChoices(initialColor).map((c) => {
-            const selected = color === c.id;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                className={"color-swatch-btn" + (selected ? " selected" : "")}
-                style={{
-                  borderColor: selected ? c.hex : undefined,
-                  backgroundColor: selected ? c.bg : undefined,
-                }}
-                onClick={() => setColor(c.id)}
-              >
-                <span
-                  className="color-dot"
-                  style={{ backgroundColor: c.hex }}
-                />
-                <span>{c.label}</span>
-              </button>
-            );
-          })}
+        <div className="reminder-tab-panel">
+          {/* The tab above already names the chosen colour. */}
+          <ColorPicker
+            value={color}
+            original={initialColor}
+            showName={false}
+            onChange={setColor}
+          />
         </div>
       )}
 
@@ -1878,7 +1865,7 @@ function EditItemRow({
   const [body, setBody] = useState(() => itemBody(note));
   const [location, setLocation] = useState(note.location ?? "");
   const [color, setColor] = useState<ReminderColorId>(
-    note.color ?? DEFAULT_REMINDER_COLOR,
+    () => normalizeReminderColor(note.color) ?? DEFAULT_REMINDER_COLOR,
   );
   const [sectionId, setSectionId] = useState<string | null>(
     note.sectionId ?? null,
@@ -1972,25 +1959,7 @@ function EditItemRow({
             placeholder="📍 Location (optional)…"
             aria-label="Edit location"
           />
-          <div className="color-picker-row">
-            {colorPickerChoices(note.color).map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className={
-                  "color-swatch-btn" + (color === c.id ? " selected" : "")
-                }
-                style={{
-                  borderColor: color === c.id ? c.hex : undefined,
-                  backgroundColor: color === c.id ? c.bg : undefined,
-                }}
-                onClick={() => setColor(c.id)}
-              >
-                <span className="color-dot" style={{ backgroundColor: c.hex }} />
-                <span>{c.label}</span>
-              </button>
-            ))}
-          </div>
+          <ColorPicker value={color} original={note.color} onChange={setColor} />
           <ReminderPicker
             initial={note.reminderAt}
             initialRepeat={note.repeat ?? "none"}

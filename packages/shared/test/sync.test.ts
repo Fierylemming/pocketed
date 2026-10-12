@@ -64,7 +64,7 @@ describe("sync engine", () => {
         body: "Bring slides",
         location: "Conference Room B",
         reminderAt: T0 + 3_600_000,
-        color: "emerald",
+        color: "#009688", // Eucalyptus
         sectionId: secRes.section.id,
       },
       T0 + 2,
@@ -78,7 +78,7 @@ describe("sync engine", () => {
 
     expect(isReminderItem(remRes.note)).toBe(true);
     expect(remRes.note.location).toBe("Conference Room B");
-    expect(remRes.note.color).toBe("emerald");
+    expect(remRes.note.color).toBe("#009688");
 
     s = renameSection(s, secRes.section.id, "Engineering", T0 + 3);
     expect(visibleSections(s)[0].name).toBe("Engineering");

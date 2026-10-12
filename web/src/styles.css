@@ -570,15 +570,23 @@ input[type="checkbox"] { width: auto; box-shadow: none; }
 }
 .preset-pill.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
-.color-picker-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
-.color-swatch-btn {
-  min-height: 2rem;
-  padding: 0.2rem 0.6rem;
-  font-size: 0.8125rem;
-  border-radius: 999px;
-  background: var(--card);
+/* Colour chooser: Google Calendar's palette as dots (as in Google's own
+   picker), with the chosen colour's name beside them. */
+.color-picker-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.color-swatch-grid { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+button.color-swatch {
+  width: 2rem;
+  height: 2rem;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-sm);
 }
-.color-swatch-btn.selected { font-weight: 650; }
+button.color-swatch:hover:not(:disabled) { transform: scale(1.12); }
+/* The colour itself is an inline style, so hover keeps showing it. */
+button.color-swatch.selected { box-shadow: 0 0 0 2px var(--accent); }
+.color-picker-name { font-size: 0.8125rem; color: var(--text-2); }
 
 .color-dot {
   display: inline-block;

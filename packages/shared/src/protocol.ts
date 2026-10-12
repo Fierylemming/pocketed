@@ -25,8 +25,8 @@ export function isValidSource(s: unknown): s is ItemSource {
 
 /** Imported calendar events alert this many minutes before they start (and again at the start). */
 export const CALENDAR_ALERT_BEFORE_MINUTES = 30;
-/** Imported calendar events use this colour. */
-export const CALENDAR_REMINDER_COLOR: ReminderColorId = "sky";
+/** Imported events that carry no colour of their own use this one: Google's Peacock. */
+export const CALENDAR_REMINDER_COLOR: ReminderColorId = "#039be5";
 
 export type ItemKind = "note" | "reminder";
 
@@ -34,12 +34,18 @@ export type ItemKind = "note" | "reminder";
 export type HexColor = `#${string}`;
 
 /**
- * A reminder's colour: one of Pocketed's six named colours, or an exact hex
- * colour (imported events keep their Google Calendar colour).
+ * A reminder's colour: an exact shade as "#rrggbb" — the same values Google
+ * Calendar shows, so a reminder here matches its event there.
+ *
+ * Pocketed's own six colours (Ruby, Amber, Emerald, Sky, Violet, Rose) were
+ * retired in favour of Google's palette. Their names stay valid so reminders
+ * coloured back then — or by a copy of the app on a phone that hasn't updated
+ * yet — keep syncing; they're displayed as the closest Google shade.
  */
-export type ReminderColorId = PaletteColorId | HexColor;
+export type ReminderColorId = HexColor | LegacyReminderColorId;
 
-export type PaletteColorId =
+/** Pocketed's six pre-Google colours, kept only for old data. */
+export type LegacyReminderColorId =
   | "ruby"
   | "amber"
   | "emerald"
@@ -47,70 +53,22 @@ export type PaletteColorId =
   | "violet"
   | "rose";
 
+/** Each retired name, in the Google shade closest to it. */
+export const LEGACY_REMINDER_COLORS: Record<LegacyReminderColorId, HexColor> = {
+  ruby: "#e67c73", // Flamingo
+  amber: "#f6bf26", // Banana
+  emerald: "#009688", // Eucalyptus
+  sky: "#039be5", // Peacock
+  violet: "#8e24aa", // Grape
+  rose: "#d81b60", // Cherry Blossom
+};
+
 export interface ReminderColorDef {
   id: ReminderColorId;
   label: string;
   hex: string;
   bg: string;
   border: string;
-}
-
-/** Diverse but limited set of colours for colour-coding reminders on the calendar. */
-export const REMINDER_COLORS: readonly ReminderColorDef[] = [
-  {
-    id: "ruby",
-    label: "Ruby",
-    hex: "#ff6b6b",
-    bg: "rgba(255, 107, 107, 0.16)",
-    border: "#ff6b6b",
-  },
-  {
-    id: "amber",
-    label: "Amber",
-    hex: "#ffd166",
-    bg: "rgba(255, 209, 102, 0.16)",
-    border: "#ffd166",
-  },
-  {
-    id: "emerald",
-    label: "Emerald",
-    hex: "#06d6a0",
-    bg: "rgba(6, 214, 160, 0.16)",
-    border: "#06d6a0",
-  },
-  {
-    id: "sky",
-    label: "Sky",
-    hex: "#4ea8de",
-    bg: "rgba(78, 168, 222, 0.16)",
-    border: "#4ea8de",
-  },
-  {
-    id: "violet",
-    label: "Violet",
-    hex: "#a855f7",
-    bg: "rgba(168, 85, 247, 0.16)",
-    border: "#a855f7",
-  },
-  {
-    id: "rose",
-    label: "Rose",
-    hex: "#f472b6",
-    bg: "rgba(244, 114, 182, 0.16)",
-    border: "#f472b6",
-  },
-] as const;
-
-export const DEFAULT_REMINDER_COLOR: ReminderColorId = "amber";
-
-const HEX_RE = /^#[0-9a-f]{6}$/;
-
-export function isHexColor(c: unknown): c is HexColor {
-  return typeof c === "string" && HEX_RE.test(c);
-}
-
-export function isValidReminderColor(c: unknown): c is ReminderColorId {
-  return typeof c === "string" && (REMINDER_COLORS.some((rc) => rc.id === c) || HEX_RE.test(c));
 }
 
 /**
@@ -130,7 +88,8 @@ export const GOOGLE_COLORS: readonly { name: string; hex: HexColor }[] = [
   { name: "Lavender", hex: "#7986cb" },
   { name: "Grape", hex: "#8e24aa" },
   { name: "Graphite", hex: "#616161" },
-  // calendar-only colours
+  // The other half of Google's 24 default colours (these arrive as an event
+  // label rather than a legacy colour id, but an event can wear any of them).
   { name: "Radicchio", hex: "#ad1457" },
   { name: "Cherry Blossom", hex: "#d81b60" },
   { name: "Pumpkin", hex: "#ef6c00" },
@@ -151,19 +110,59 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
-/** Display info for any reminder colour (named or exact hex). */
+/**
+ * The colours a reminder can be given: Google Calendar's own palette, in the
+ * order Google shows it and with Google's names. A reminder's colour is the
+ * event shade itself, so one made here matches one imported from the calendar.
+ */
+export const REMINDER_COLORS: readonly ReminderColorDef[] = GOOGLE_COLORS.map((c) => ({
+  id: c.hex,
+  label: c.name,
+  hex: c.hex,
+  bg: hexToRgba(c.hex, 0.16),
+  border: c.hex,
+}));
+
+/** New reminders start here (Google's Banana). */
+export const DEFAULT_REMINDER_COLOR: ReminderColorId = "#f6bf26";
+
+const HEX_RE = /^#[0-9a-f]{6}$/;
+
+export function isHexColor(c: unknown): c is HexColor {
+  return typeof c === "string" && HEX_RE.test(c);
+}
+
+export function isLegacyReminderColor(c: unknown): c is LegacyReminderColorId {
+  return typeof c === "string" && isHexColor(LEGACY_REMINDER_COLORS[c as LegacyReminderColorId]);
+}
+
+export function isValidReminderColor(c: unknown): c is ReminderColorId {
+  return isHexColor(c) || isLegacyReminderColor(c);
+}
+
+/**
+ * Any stored colour as an exact shade: an "#rrggbb" value unchanged, one of the
+ * six retired names as its Google equivalent, anything else null (so the caller
+ * can fall back to the default).
+ */
+export function normalizeReminderColor(color?: ReminderColorId | null): HexColor | null {
+  if (isHexColor(color)) return color;
+  if (isLegacyReminderColor(color)) return LEGACY_REMINDER_COLORS[color];
+  return null;
+}
+
+/** Display info for any reminder colour (a Google shade, a custom one, or a retired name). */
 export function getReminderColor(color?: ReminderColorId | null): ReminderColorDef {
-  if (isHexColor(color)) {
-    const named = GOOGLE_COLORS.find((g) => g.hex === color);
-    return {
-      id: color,
-      label: named?.name ?? "Custom",
-      hex: color,
-      bg: hexToRgba(color, 0.16),
-      border: color,
-    };
-  }
-  return REMINDER_COLORS.find((c) => c.id === color) ?? REMINDER_COLORS[1];
+  const hex = normalizeReminderColor(color) ?? DEFAULT_REMINDER_COLOR;
+  const known = REMINDER_COLORS.find((c) => c.id === hex);
+  if (known) return known;
+  return {
+    id: hex,
+    label: "Custom",
+    hex,
+    bg: hexToRgba(hex, 0.16),
+    border: hex,
+  };
 }
 
 /** How a reminder repeats after its time. "none" = one-off. */

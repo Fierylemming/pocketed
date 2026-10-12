@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Note } from "@pocketed/shared";
 import {
   colorPickerChoices,
-  extraReminderColors,
+  colorsInUse,
   itemsInSection,
   matchesQuery,
   reminderColorCounts,
@@ -94,8 +94,10 @@ describe("itemsInSection & sectionCounts", () => {
 
     const colorCounts = reminderColorCounts(list);
     expect(colorCounts.all).toBe(2);
-    expect(colorCounts.ruby).toBe(1);
-    expect(colorCounts.emerald).toBe(1);
+    // The retired names count as the Google shade they're shown as.
+    expect(colorCounts["#e67c73"]).toBe(1); // Ruby -> Flamingo
+    expect(colorCounts["#009688"]).toBe(1); // Emerald -> Eucalyptus
+    expect(colorCounts.ruby).toBeUndefined();
   });
 });
 
@@ -116,46 +118,47 @@ describe("matchesQuery", () => {
   });
 });
 
-describe("exact Google colours", () => {
+describe("Google Calendar colours", () => {
   const list = [
     mk("a", { reminderAt: NOW, color: "#0b8043" }),
     mk("b", { reminderAt: NOW, color: "#d50000" }),
     mk("c", { reminderAt: NOW, color: "#123456" }),
     mk("d", { reminderAt: NOW, color: "#d50000" }),
-    mk("e", { reminderAt: NOW, color: "sky" }),
+    mk("e", { reminderAt: NOW, color: "sky" }), // coloured before the palette changed
     mk("f", { reminderAt: NOW, color: "#7986cb", deleted: true }),
     mk("g", { color: "#7986cb" }), // a note, not a reminder
   ];
 
-  it("are counted next to the six named colours", () => {
+  it("are counted by shade, with a retired name read as its Google colour", () => {
     const counts = reminderColorCounts(list);
     expect(counts.all).toBe(5);
     expect(counts["#d50000"]).toBe(2);
     expect(counts["#0b8043"]).toBe(1);
-    expect(counts.sky).toBe(1);
-    expect(counts.ruby).toBe(0);
-    expect(counts["#7986cb"]).toBeUndefined();
+    expect(counts["#039be5"]).toBe(1); // "sky" is shown as Peacock
+    expect(counts.sky).toBeUndefined();
+    expect(counts["#7986cb"]).toBeUndefined(); // deleted, and a note
   });
 
-  it("become extra filter chips in Google's order, with Google's names", () => {
-    expect(extraReminderColors(list).map((c) => [c.id, c.label])).toEqual([
+  it("become filter chips in Google's order, with Google's names", () => {
+    expect(colorsInUse(list).map((c) => [c.id, c.label])).toEqual([
       ["#d50000", "Tomato"],
       ["#0b8043", "Basil"],
+      ["#039be5", "Peacock"],
       ["#123456", "Custom"],
     ]);
   });
 
-  it("stay selectable when editing", () => {
-    expect(colorPickerChoices("#d50000").map((c) => c.id)).toEqual([
-      "#d50000",
-      "ruby",
-      "amber",
-      "emerald",
-      "sky",
-      "violet",
-      "rose",
-    ]);
-    expect(colorPickerChoices("sky")).toHaveLength(6);
-    expect(colorPickerChoices(null)).toHaveLength(6);
+  it("offer Google's palette in the picker, with a custom shade kept selectable", () => {
+    const palette = colorPickerChoices(null);
+    expect(palette).toHaveLength(24);
+    expect(palette[0]).toMatchObject({ id: "#d50000", label: "Tomato" });
+    expect(palette.map((c) => c.id)).toContain("#c0ca33"); // Avocado
+    // A colour that is already in the palette isn't offered twice…
+    expect(colorPickerChoices("sky")).toHaveLength(24);
+    expect(colorPickerChoices("#0b8043")).toHaveLength(24);
+    // …but a shade from Google's own colour picker stays selectable.
+    const custom = colorPickerChoices("#123456");
+    expect(custom).toHaveLength(25);
+    expect(custom[0]).toMatchObject({ id: "#123456", label: "Custom" });
   });
 });

@@ -76,7 +76,7 @@ describe("reconcileCalendar", () => {
       reminderAt: dentist.start,
       repeat: "none",
       alertBefore: 30,
-      color: "sky",
+      color: "#039be5", // no colour of its own: the calendar's own default
       source: "gcal",
     });
     expect(r.state.notes[idOf(party)].location).toBeNull();

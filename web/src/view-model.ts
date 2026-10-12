@@ -4,8 +4,8 @@ import {
   formatReminderLabel,
   getReminderColor,
   GOOGLE_COLORS,
-  isHexColor,
   isReminderItem,
+  normalizeReminderColor,
   REMINDER_COLORS,
   repeatLabel,
   sortNotes,
@@ -99,10 +99,9 @@ export function sectionCounts(
   };
 }
 
-/** Reminder counts per colour id (named or exact hex), plus "all". */
+/** Reminder counts per colour (an exact shade), plus "all". */
 export function reminderColorCounts(allNotes: Note[]): Record<string, number> {
   const counts: Record<string, number> = { all: 0 };
-  for (const rc of REMINDER_COLORS) counts[rc.id] = 0;
   for (const n of allNotes) {
     if (n.deleted || n.reminderAt == null) continue;
     counts.all += 1;
@@ -113,15 +112,15 @@ export function reminderColorCounts(allNotes: Note[]): Record<string, number> {
 }
 
 /**
- * Colours beyond Pocketed's own six that reminders currently use (exact
- * Google Calendar colours), in Google's palette order, then custom ones.
+ * Every colour your reminders actually use, in Google Calendar's palette order
+ * with custom shades last. The calendar's colour filter lists these, so it only
+ * offers colours you'd really see.
  */
-export function extraReminderColors(allNotes: Note[]): ReminderColorDef[] {
+export function colorsInUse(allNotes: Note[]): ReminderColorDef[] {
   const seen = new Set<string>();
   for (const n of allNotes) {
     if (n.deleted || n.reminderAt == null) continue;
-    const c = effectiveReminderColor(n);
-    if (isHexColor(c)) seen.add(c);
+    seen.add(effectiveReminderColor(n));
   }
   const order = (hex: string) => {
     const i = GOOGLE_COLORS.findIndex((g) => g.hex === hex);
@@ -133,11 +132,16 @@ export function extraReminderColors(allNotes: Note[]): ReminderColorDef[] {
 }
 
 /**
- * Choices for a colour picker: an item's exact Google colour (if it has one)
- * first, so it stays selectable, then Pocketed's six.
+ * Choices for a colour picker: Google Calendar's palette, with an item's own
+ * shade (a Google custom colour, or one of the retired six) first so it stays
+ * selectable.
  */
-export function colorPickerChoices(current: ReminderColorId | null | undefined): readonly ReminderColorDef[] {
-  return isHexColor(current) ? [getReminderColor(current), ...REMINDER_COLORS] : REMINDER_COLORS;
+export function colorPickerChoices(
+  current: ReminderColorId | null | undefined,
+): readonly ReminderColorDef[] {
+  const hex = normalizeReminderColor(current);
+  if (!hex || REMINDER_COLORS.some((c) => c.id === hex)) return REMINDER_COLORS;
+  return [getReminderColor(hex), ...REMINDER_COLORS];
 }
 
 /** Case-insensitive match against title, body, text, location, and checklist items. Blank query matches all. */

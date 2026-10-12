@@ -8,8 +8,12 @@ import {
   type GoogleFeed,
 } from "../src/google-calendar";
 import {
+  CALENDAR_REMINDER_COLOR,
+  DEFAULT_REMINDER_COLOR,
   getReminderColor,
+  isHexColor,
   isValidReminderColor,
+  REMINDER_COLORS,
   validateOp,
   type Op,
 } from "../src/protocol";
@@ -26,12 +30,18 @@ function feed(events: GoogleFeed["events"], calendar: GoogleFeed["calendar"] = {
 }
 
 describe("colour values", () => {
-  it("accept exact hex colours alongside the six named ones", () => {
-    expect(isValidReminderColor("sky")).toBe(true);
+  it("accepts exact hex colours, plus the six retired names old reminders carry", () => {
     expect(isValidReminderColor("#d50000")).toBe(true);
+    expect(isValidReminderColor("#c0ca33")).toBe(true);
+    // Pocketed's pre-Google palette: kept so old reminders (and an older copy
+    // of the app still open on a phone) keep syncing.
+    expect(isValidReminderColor("sky")).toBe(true);
+    expect(isValidReminderColor("rose")).toBe(true);
     expect(isValidReminderColor("#D50000")).toBe(false); // stored lowercase
     expect(isValidReminderColor("#fff")).toBe(false);
     expect(isValidReminderColor("red")).toBe(false);
+    expect(isValidReminderColor("tomato")).toBe(false); // names, not Google's names
+    expect(isValidReminderColor("toString")).toBe(false); // no prototype keys
     const op = {
       id: "o1",
       kind: "upsert",
@@ -45,6 +55,18 @@ describe("colour values", () => {
     expect(validateOp(op)).toBeNull();
   });
 
+  it("are Google Calendar's palette: the six old names are no longer offered", () => {
+    expect(REMINDER_COLORS).toHaveLength(24);
+    expect(REMINDER_COLORS.map((c) => c.label)).toEqual(
+      expect.arrayContaining(["Tomato", "Peacock", "Avocado", "Graphite"]),
+    );
+    expect(REMINDER_COLORS.every((c) => isHexColor(c.id))).toBe(true);
+    expect(REMINDER_COLORS.some((c) => c.id === "sky")).toBe(false);
+    expect(REMINDER_COLORS.some((c) => c.id === "amber")).toBe(false);
+    expect(DEFAULT_REMINDER_COLOR).toBe("#f6bf26"); // Banana
+    expect(CALENDAR_REMINDER_COLOR).toBe("#039be5"); // Peacock
+  });
+
   it("show Google's names and a tinted background", () => {
     expect(getReminderColor("#d50000")).toEqual({
       id: "#d50000",
@@ -54,7 +76,10 @@ describe("colour values", () => {
       border: "#d50000",
     });
     expect(getReminderColor("#123456").label).toBe("Custom");
-    expect(getReminderColor("sky").label).toBe("Sky");
+    // A retired name reads as the Google shade closest to it.
+    expect(getReminderColor("sky")).toMatchObject({ id: "#039be5", label: "Peacock" });
+    expect(getReminderColor("ruby")).toMatchObject({ id: "#e67c73", label: "Flamingo" });
+    expect(getReminderColor(null)).toMatchObject({ id: "#f6bf26", label: "Banana" });
   });
 
   it("filter by exact colour", () => {
@@ -364,7 +389,7 @@ describe("reconcile with Google colours", () => {
   it("switching from the secret link to Google recolours instead of duplicating", () => {
     const { color: _c, ...noColour } = base;
     let r = reconcileCalendar(emptyState(), [noColour], NOW);
-    expect(r.state.notes[id].color).toBe("sky");
+    expect(r.state.notes[id].color).toBe("#039be5");
     r = reconcileCalendar(r.state, [base], NOW + 1);
     expect(r).toMatchObject({ added: 0, updated: 1, removed: 0 });
     expect(r.state.notes[id].color).toBe("#0b8043");
