@@ -16,6 +16,7 @@ import {
   type Section,
 } from "./protocol";
 import { reminderAfterDone } from "./reminders";
+import { canMoveSection, descendantSectionIds } from "./sections";
 
 export interface SyncState {
   notes: Record<string, Note>;
@@ -338,15 +339,25 @@ export function deleteNote(state: SyncState, id: string, now: number): SyncState
 
 // ---- Section operations ----
 
+/**
+ * Creates a section. Pass `parentId` to make it a subsection of an existing
+ * section (subsections nest to any depth); null/omitted = top level.
+ */
 export function addSection(
   state: SyncState,
   name: string,
   now: number,
+  parentId: string | null = null,
 ): { state: SyncState; section: Section } {
   const trimmed = name.trim();
+  const sections = state.sections ?? {};
+  const parent = parentId !== null && sections[parentId] && !sections[parentId].deleted
+    ? parentId
+    : null;
   const section: Section = {
     id: uid(),
     name: trimmed,
+    parentId: parent,
     createdAt: now,
     updatedAt: now,
     deleted: false,
@@ -356,14 +367,30 @@ export function addSection(
     kind: "section-upsert",
     noteId: section.id,
     sectionName: trimmed,
+    parentId: parent,
     createdAt: now,
     updatedAt: now,
   };
-  const sections = { ...(state.sections ?? {}), [section.id]: section };
   return {
-    state: pushOp({ ...state, sections }, op),
+    state: pushOp({ ...state, sections: { ...sections, [section.id]: section } }, op),
     section,
   };
+}
+
+function sectionUpsert(state: SyncState, section: Section): SyncState {
+  const op: Op = {
+    id: uid(),
+    kind: "section-upsert",
+    noteId: section.id,
+    sectionName: section.name,
+    parentId: section.parentId ?? null,
+    createdAt: section.createdAt,
+    updatedAt: section.updatedAt,
+  };
+  return pushOp(
+    { ...state, sections: { ...(state.sections ?? {}), [section.id]: section } },
+    op,
+  );
 }
 
 export function renameSection(
@@ -372,26 +399,33 @@ export function renameSection(
   name: string,
   now: number,
 ): SyncState {
-  const sections = state.sections ?? {};
-  const prev = sections[id];
+  const prev = (state.sections ?? {})[id];
   if (!prev || prev.deleted) return state;
   const trimmed = name.trim();
   if (!trimmed) return state;
-  const section: Section = { ...prev, name: trimmed, updatedAt: now };
-  const op: Op = {
-    id: uid(),
-    kind: "section-upsert",
-    noteId: id,
-    sectionName: trimmed,
-    createdAt: section.createdAt,
-    updatedAt: now,
-  };
-  return pushOp(
-    { ...state, sections: { ...sections, [id]: section } },
-    op,
-  );
+  return sectionUpsert(state, { ...prev, name: trimmed, updatedAt: now });
 }
 
+/**
+ * Moves a section (with everything inside it) into `parentId`, or to the top
+ * level when null. Refused (state unchanged) when the target is the section
+ * itself or one of its own subsections.
+ */
+export function moveSection(
+  state: SyncState,
+  id: string,
+  parentId: string | null,
+  now: number,
+): SyncState {
+  const sections = state.sections ?? {};
+  const prev = sections[id];
+  if (!prev || prev.deleted) return state;
+  if ((prev.parentId ?? null) === parentId) return state;
+  if (!canMoveSection(Object.values(sections), id, parentId)) return state;
+  return sectionUpsert(state, { ...prev, parentId, updatedAt: now });
+}
+
+/** Deletes a section, every subsection nested inside it, and all their notes & reminders. */
 export function deleteSection(
   state: SyncState,
   id: string,
@@ -400,20 +434,29 @@ export function deleteSection(
   const sections = state.sections ?? {};
   const prev = sections[id];
   if (!prev) return state;
-  const section: Section = { ...prev, deleted: true, updatedAt: now };
-  const op: Op = {
-    id: uid(),
-    kind: "section-delete",
-    noteId: id,
-    updatedAt: now,
-  };
-  let next: SyncState = pushOp(
-    { ...state, sections: { ...sections, [id]: section } },
-    op,
-  );
-  // Also delete notes & reminders belonging to this section
+  const doomed = [id, ...descendantSectionIds(Object.values(sections), id)];
+  let next: SyncState = state;
+  for (const secId of doomed) {
+    const sec = (next.sections ?? {})[secId];
+    if (!sec) continue;
+    const op: Op = {
+      id: uid(),
+      kind: "section-delete",
+      noteId: secId,
+      updatedAt: now,
+    };
+    next = pushOp(
+      {
+        ...next,
+        sections: { ...(next.sections ?? {}), [secId]: { ...sec, deleted: true, updatedAt: now } },
+      },
+      op,
+    );
+  }
+  // Also delete notes & reminders belonging to those sections
+  const doomedSet = new Set(doomed);
   for (const n of Object.values(next.notes)) {
-    if (!n.deleted && n.sectionId === id) {
+    if (!n.deleted && n.sectionId != null && doomedSet.has(n.sectionId)) {
       next = deleteNote(next, n.id, now);
     }
   }
@@ -443,6 +486,8 @@ export function applyRemote(state: SyncState, ops: Op[]): SyncState {
         sections[op.noteId] = {
           id: op.noteId,
           name: op.sectionName ?? curSec?.name ?? "Untitled",
+          // Ops from apps that predate subsections carry no parentId: keep the current one.
+          parentId: op.parentId !== undefined ? op.parentId : (curSec?.parentId ?? null),
           createdAt: op.createdAt ?? curSec?.createdAt ?? op.updatedAt,
           updatedAt: op.updatedAt,
           deleted: false,

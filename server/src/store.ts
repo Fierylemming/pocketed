@@ -51,6 +51,7 @@ interface StoredMeta {
   checklist?: ChecklistItem[];
   pinned?: boolean;
   sectionName?: string;
+  parentId?: string | null;
   repeat?: RepeatId | null;
   alertBefore?: number | null;
   source?: ItemSource | null;
@@ -69,6 +70,7 @@ function encodeMeta(op: Op): string | null {
   if (op.checklist !== undefined) m.checklist = op.checklist;
   if (op.pinned !== undefined) m.pinned = op.pinned;
   if (op.sectionName !== undefined) m.sectionName = op.sectionName;
+  if (op.parentId !== undefined) m.parentId = op.parentId;
   if (op.repeat !== undefined) m.repeat = op.repeat;
   if (op.alertBefore !== undefined) m.alertBefore = op.alertBefore;
   if (op.source !== undefined) m.source = op.source;
@@ -137,7 +139,8 @@ CREATE TABLE IF NOT EXISTS section (
   name TEXT NOT NULL,
   createdAt INTEGER NOT NULL,
   updatedAt INTEGER NOT NULL,
-  deleted INTEGER NOT NULL DEFAULT 0
+  deleted INTEGER NOT NULL DEFAULT 0,
+  parentId TEXT
 );
 CREATE TABLE IF NOT EXISTS auth (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -205,6 +208,8 @@ export class D1Store implements Store {
     for (const alter of [
       "ALTER TABLE op ADD COLUMN meta TEXT",
       "ALTER TABLE note ADD COLUMN meta TEXT",
+      // Subsections: databases created before sections could nest.
+      "ALTER TABLE section ADD COLUMN parentId TEXT",
     ]) {
       try {
         await this.db.prepare(alter).run();
@@ -266,11 +271,13 @@ export class D1Store implements Store {
     if (op.kind === "section-upsert") {
       await this.db
         .prepare(
-          `INSERT INTO section (id, name, createdAt, updatedAt, deleted)
-           VALUES (?, ?, ?, ?, 0)
+          // ?6 = 0 when the op predates subsections (no parentId): keep the stored parent.
+          `INSERT INTO section (id, name, createdAt, updatedAt, deleted, parentId)
+           VALUES (?1, ?2, ?3, ?4, 0, ?5)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              deleted = 0,
+             parentId = CASE WHEN ?6 = 1 THEN excluded.parentId ELSE section.parentId END,
              updatedAt = excluded.updatedAt
            WHERE excluded.updatedAt >= section.updatedAt`,
         )
@@ -279,6 +286,8 @@ export class D1Store implements Store {
           op.sectionName ?? "Untitled",
           op.createdAt ?? op.updatedAt,
           op.updatedAt,
+          op.parentId ?? null,
+          op.parentId !== undefined ? 1 : 0,
         )
         .run();
       return;
@@ -358,12 +367,13 @@ export class D1Store implements Store {
   async allSections(): Promise<Section[]> {
     const rows = await this.db
       .prepare(
-        `SELECT id, name, createdAt, updatedAt, deleted FROM section`,
+        `SELECT id, name, createdAt, updatedAt, deleted, parentId FROM section`,
       )
       .all();
     return rows.results.map((r) => ({
       id: r.id as string,
       name: r.name as string,
+      parentId: (r.parentId as string | null) ?? null,
       createdAt: r.createdAt as number,
       updatedAt: r.updatedAt as number,
       deleted: (r.deleted as number) === 1,
@@ -503,6 +513,7 @@ export class MemoryStore implements Store {
           this.sections.set(op.noteId, {
             id: op.noteId,
             name: curSec?.name ?? "",
+            parentId: curSec?.parentId ?? null,
             createdAt: curSec?.createdAt ?? op.updatedAt,
             updatedAt: Math.max(curSec?.updatedAt ?? 0, op.updatedAt),
             deleted: true,
@@ -512,6 +523,7 @@ export class MemoryStore implements Store {
         this.sections.set(op.noteId, {
           id: op.noteId,
           name: op.sectionName ?? curSec?.name ?? "Untitled",
+          parentId: op.parentId !== undefined ? op.parentId : (curSec?.parentId ?? null),
           createdAt: op.createdAt ?? curSec?.createdAt ?? op.updatedAt,
           updatedAt: op.updatedAt,
           deleted: false,

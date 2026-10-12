@@ -7,6 +7,7 @@ export const LIMITS = {
   reminderBodyChars: 500,
   locationChars: 200,
   sectionNameChars: 100,
+  sectionIdChars: 100,
   maxImagesPerNote: 8,
   maxImageDataUrlChars: 800_000,
   opsPerPush: 500,
@@ -202,6 +203,11 @@ export interface ChecklistItem {
 export interface Section {
   id: string;
   name: string;
+  /**
+   * The section this one sits inside (a subsection), or null/missing for a
+   * top-level section. Sections nest to any depth.
+   */
+  parentId?: string | null;
   createdAt: number;
   updatedAt: number;
   deleted: boolean;
@@ -261,6 +267,8 @@ export interface Op {
   checklist?: ChecklistItem[];
   pinned?: boolean;
   sectionName?: string;
+  /** section-upsert only: the parent section (null = top level, missing = unchanged). */
+  parentId?: string | null;
   reminderAt?: number | null;
   repeat?: RepeatId | null;
   alertBefore?: number | null;
@@ -403,6 +411,15 @@ export function validateOp(op: Op): string | null {
     }
     if (op.sectionName.length > LIMITS.sectionNameChars) {
       return "op.sectionName too long";
+    }
+    if (
+      op.parentId != null &&
+      (typeof op.parentId !== "string" ||
+        !op.parentId ||
+        op.parentId.length > LIMITS.sectionIdChars ||
+        op.parentId === op.noteId)
+    ) {
+      return "op.parentId invalid";
     }
   }
   return null;

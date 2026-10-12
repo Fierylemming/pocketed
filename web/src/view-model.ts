@@ -7,7 +7,10 @@ import {
   isReminderItem,
   normalizeReminderColor,
   REMINDER_COLORS,
+  childSections,
+  descendantSectionIds,
   repeatLabel,
+  sectionPathLabel,
   sortNotes,
   visibleSections,
   type Note,
@@ -97,6 +100,58 @@ export function sectionCounts(
     reminders: reminders.length,
     due,
   };
+}
+
+export interface FolderSummary extends SectionSummary {
+  /** Subsections directly inside. */
+  subsections: number;
+  /** Due reminders in this section and every subsection nested inside it. */
+  dueInside: number;
+  /** Notes + reminders in this section and every subsection nested inside it. */
+  itemsInside: number;
+}
+
+/** Counts for a section folder card / sidebar row, including what's nested inside it. */
+export function folderSummary(
+  allNotes: Note[],
+  sections: Section[],
+  sectionId: string,
+  now: number,
+): FolderSummary {
+  const direct = sectionCounts(allNotes, sectionId, now);
+  const inside = new Set([sectionId, ...descendantSectionIds(sections, sectionId)]);
+  let dueInside = 0;
+  let itemsInside = 0;
+  for (const n of allNotes) {
+    if (n.deleted || n.sectionId == null || !inside.has(n.sectionId)) continue;
+    itemsInside += 1;
+    if (isReminderItem(n) && n.reminderAt != null && n.reminderAt <= now) dueInside += 1;
+  }
+  return {
+    ...direct,
+    subsections: childSections(sections, sectionId).length,
+    dueInside,
+    itemsInside,
+  };
+}
+
+/** Items in a section or anywhere inside its subsections (`null` = General only). */
+export function itemsWithinSection(
+  allNotes: Note[],
+  sections: Section[],
+  sectionId: string | null,
+): Note[] {
+  if (sectionId === null) return allNotes.filter((n) => (n.sectionId ?? null) === null);
+  const inside = new Set([sectionId, ...descendantSectionIds(sections, sectionId)]);
+  return allNotes.filter((n) => n.sectionId != null && inside.has(n.sectionId));
+}
+
+/**
+ * Sections whose `name` is their full path ("Work › Projects"), for badges on
+ * cards shown outside their own folder.
+ */
+export function sectionsWithPathNames(sections: Section[]): Section[] {
+  return sections.map((s) => ({ ...s, name: sectionPathLabel(sections, s.id) || s.name }));
 }
 
 /** Reminder counts per colour (an exact shade), plus "all". */

@@ -1,5 +1,6 @@
 export * from "./protocol";
 export * from "./sync";
+export * from "./sections";
 export * from "./reminders";
 export * from "./widget-data";
 export * from "./auth";

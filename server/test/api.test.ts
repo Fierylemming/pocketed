@@ -231,4 +231,36 @@ describe("sync api", () => {
     const savedNote = body.notes.find((n) => n.id === "note-rich-1")!;
     expect(savedNote.images).toHaveLength(1);
   });
+
+  it("stores subsections and keeps the parent when an older app renames one", async () => {
+    const { call } = await freshApp();
+    const ops: Op[] = [
+      { id: "s1", kind: "section-upsert", noteId: "sec-work", sectionName: "Work", parentId: null, createdAt: 1, updatedAt: 1 },
+      { id: "s2", kind: "section-upsert", noteId: "sec-proj", sectionName: "Projects", parentId: "sec-work", createdAt: 2, updatedAt: 2 },
+      { id: "s3", kind: "section-upsert", noteId: "sec-alpha", sectionName: "Alpha", parentId: "sec-proj", createdAt: 3, updatedAt: 3 },
+      // An app from before subsections: no parentId at all.
+      { id: "s4", kind: "section-upsert", noteId: "sec-alpha", sectionName: "Alpha v2", createdAt: 3, updatedAt: 4 },
+    ];
+    const push = await call("/v1/push", { method: "POST", body: JSON.stringify({ ops }) });
+    expect(push.status).toBe(200);
+
+    const snap = (await (await call("/v1/snapshot")).json()) as {
+      sections: { id: string; name: string; parentId: string | null }[];
+    };
+    const byId = Object.fromEntries(snap.sections.map((s) => [s.id, s]));
+    expect(byId["sec-work"].parentId).toBeNull();
+    expect(byId["sec-proj"].parentId).toBe("sec-work");
+    expect(byId["sec-alpha"]).toMatchObject({ name: "Alpha v2", parentId: "sec-proj" });
+
+    const pull = (await (await call("/v1/pull?cursor=0")).json()) as { ops: Op[] };
+    expect(pull.ops.find((o) => o.id === "s3")!.parentId).toBe("sec-proj");
+    expect(pull.ops.find((o) => o.id === "s4")!.parentId).toBeUndefined();
+  });
+
+  it("rejects a section placed inside itself", async () => {
+    const { call } = await freshApp();
+    const bad: Op = { id: "x1", kind: "section-upsert", noteId: "sec-a", sectionName: "A", parentId: "sec-a", updatedAt: 1 };
+    const push = await call("/v1/push", { method: "POST", body: JSON.stringify({ ops: [bad] }) });
+    expect(push.status).toBe(400);
+  });
 });
