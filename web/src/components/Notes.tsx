@@ -9,20 +9,26 @@ import {
 } from "react";
 import {
   addSection,
+  canMoveSection,
+  childSections,
   createNoteItem,
   createReminderItem,
   DEFAULT_REMINDER_COLOR,
   deleteNote,
   deleteSection,
+  descendantSectionIds,
+  flattenSectionTree,
   getReminderColor,
   isReminderItem,
   itemBody,
   itemTitle,
   LIMITS,
   markReminderDone,
+  moveSection,
   normalizeReminderColor,
   quickReminders,
   renameSection,
+  sectionPath,
   shortAgo,
   uid,
   updateItem,
@@ -44,12 +50,15 @@ import {
 } from "../install";
 import { fileToDataUrl } from "../images";
 import {
+  folderSummary,
   itemsInSection,
+  itemsWithinSection,
   matchesQuery,
   reminderMeta,
   rowsFor,
   sectionCounts,
   sectionsFor,
+  sectionsWithPathNames,
   syncStatus,
   userSectionsFor,
 } from "../view-model";
@@ -60,6 +69,17 @@ import { ReminderPicker, type ReminderValue } from "./ReminderPicker";
 import { Settings } from "./Settings";
 
 const DISMISS_INSTALL_KEY = "pocketed.v2.installDismissed";
+const EXPANDED_SECTIONS_KEY = "pocketed.v2.expandedSections";
+
+function loadExpandedSections(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_SECTIONS_KEY);
+    const list: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(list) ? list.filter((x) => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 const PRESET_LOCATIONS = ["Home", "Work", "Office", "Supermarket", "Gym", "School"];
 
 export const GENERAL_SECTION_ID = "__general__";
@@ -95,6 +115,10 @@ export function Notes({
   const [navOpen, setNavOpen] = useState(false);
   const [addingSidebarSection, setAddingSidebarSection] = useState(false);
   const [sidebarSectionName, setSidebarSectionName] = useState("");
+  // Which sections are unfolded in the sidebar tree (remembered on this device)
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(loadExpandedSections);
+  // "Move section" picker on a section page
+  const [movingSectionId, setMovingSectionId] = useState<string | null>(null);
 
   // Search, Settings, Editing, and Interactive Modals
   const [query, setQuery] = useState("");
@@ -159,12 +183,46 @@ export function Notes({
   const targetSectionId =
     activeSectionId === GENERAL_SECTION_ID ? null : activeSectionId;
 
+  // Top-level section … current section, for the breadcrumb.
+  const activeSectionPath = activeSectionObj ? sectionPath(userSections, activeSectionObj.id) : [];
+
+  // Unfold the sidebar down to wherever we are.
+  const activePathKey = activeSectionPath.map((s) => s.id).join("/");
+  useEffect(() => {
+    for (const s of activeSectionPath.slice(0, -1)) setExpanded(s.id, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePathKey]);
+
+  // On Home this makes a top-level section; inside a section, a subsection of it.
   function handleCreateSection(e: FormEvent) {
     e.preventDefault();
     const name = newSectionName.trim();
     if (!name) return;
-    manager.mutate((s) => addSection(s, name, Date.now()).state);
+    const parentId = activeSectionObj ? activeSectionObj.id : null;
+    manager.mutate((s) => addSection(s, name, Date.now(), parentId).state);
+    if (parentId) setExpanded(parentId, true);
     setNewSectionName("");
+  }
+
+  function setExpanded(id: string, open: boolean) {
+    setExpandedSections((prev) => {
+      if (prev.has(id) === open) return prev;
+      const next = new Set(prev);
+      if (open) next.add(id);
+      else next.delete(id);
+      try {
+        localStorage.setItem(EXPANDED_SECTIONS_KEY, JSON.stringify([...next]));
+      } catch {
+        /* storage full or unavailable: just don't remember it */
+      }
+      return next;
+    });
+  }
+
+  function handleMoveSection(id: string, parentId: string | null) {
+    manager.mutate((s) => moveSection(s, id, parentId, Date.now()));
+    if (parentId) setExpanded(parentId, true);
+    setMovingSectionId(null);
   }
 
   function handleSaveRenameSection(id: string) {
@@ -177,14 +235,18 @@ export function Notes({
   }
 
   function handleDeleteSection(sec: Section) {
-    if (
-      confirm(
-        `Delete section "${sec.name}" and all notes/reminders inside it?`,
-      )
-    ) {
+    const nested = descendantSectionIds(userSections, sec.id).size;
+    const what =
+      nested > 0
+        ? `its ${nested} ${nested === 1 ? "subsection" : "subsections"} and all notes/reminders inside them`
+        : "all notes/reminders inside it";
+    if (confirm(`Delete section "${sec.name}", ${what}?`)) {
+      const parent = activeSectionPath.length > 1 ? activeSectionPath[activeSectionPath.length - 2] : null;
+      const removed = new Set([sec.id, ...descendantSectionIds(userSections, sec.id)]);
       manager.mutate((s) => deleteSection(s, sec.id, Date.now()));
-      if (activeSectionId === sec.id) {
-        setActiveSectionId(null);
+      // If we were inside what just got deleted, step back out to the nearest surviving folder.
+      if (activeSectionId && removed.has(activeSectionId)) {
+        setActiveSectionId(parent && !removed.has(parent.id) ? parent.id : null);
       }
     }
   }
@@ -198,10 +260,9 @@ export function Notes({
   }
 
   const searching = query.trim().length > 0;
+  // Searching inside a section also searches every subsection nested in it.
   const scopedNotes =
-    activeSectionId === null
-      ? all
-      : all.filter((n) => (n.sectionId ?? null) === targetSectionId);
+    activeSectionId === null ? all : itemsWithinSection(all, userSections, targetSectionId);
   const searchHits = searching
     ? scopedNotes.filter((n) => matchesQuery(n, query))
     : [];
@@ -212,7 +273,11 @@ export function Notes({
     ? (all.find((n) => n.id === expandedNoteId) ?? null)
     : null;
 
-  const sectionMap = new Map(userSections.map((s) => [s.id, s]));
+  // Badges name the full path ("Work › Projects") so nested folders are unambiguous.
+  const pathNamedSections = sectionsWithPathNames(userSections);
+  const sectionMap = new Map(pathNamedSections.map((s) => [s.id, s]));
+  const topSections = childSections(userSections, null);
+  const subSections = activeSectionObj ? childSections(userSections, activeSectionObj.id) : [];
 
   function renderReminderCard(note: Note, sectionBadge?: Section | null) {
     if (editing === note.id) {
@@ -266,6 +331,152 @@ export function Notes({
     );
   }
 
+  /**
+   * Folder cards for a list of sections plus a "new section" form. On Home it
+   * lists top-level sections; inside a section it lists that section's
+   * subsections (and the form creates a subsection there).
+   */
+  function renderSectionsPanel(list: Section[], isHome: boolean) {
+    const parentName = activeSectionObj?.name ?? "";
+    return (
+      <section
+        className={"sections-panel" + (isHome ? "" : " subsections-panel")}
+        aria-label={isHome ? "Sections" : "Subsections"}
+      >
+        <div className="block-head">
+          <h2 className="block-title">{isHome ? "Sections" : "Subsections"}</h2>
+          <p className="muted small">
+            {isHome
+              ? "Click a section to open its folder. Sections can hold subsections, too."
+              : `Folders inside ${parentName}. They can have subsections of their own.`}
+          </p>
+        </div>
+
+        <form className="section-create-form" onSubmit={handleCreateSection}>
+          <input
+            value={newSectionName}
+            onChange={(e) => setNewSectionName(e.target.value)}
+            placeholder={
+              isHome
+                ? "New section, e.g. Work, Personal, Shopping…"
+                : `New subsection in ${parentName}…`
+            }
+            maxLength={LIMITS.sectionNameChars}
+            aria-label={isHome ? "New section name" : "New subsection name"}
+          />
+          <button type="submit" className="primary" disabled={!newSectionName.trim()}>
+            {isHome ? "+ Create section" : "+ Create subsection"}
+          </button>
+        </form>
+
+        {isHome && list.length === 0 && generalCounts.notes + generalCounts.reminders === 0 ? (
+          <p className="muted small center-text sections-empty">
+            No sections yet. Create one above to organise your notes and reminders into folders.
+          </p>
+        ) : list.length === 0 && !isHome ? null : (
+          <div className="section-folders-grid">
+            {list.map((sec) => renderFolderCard(sec))}
+
+            {isHome && generalCounts.notes + generalCounts.reminders > 0 && (
+              <div className="section-folder-card general-folder">
+                <button
+                  type="button"
+                  className="section-folder-link"
+                  onClick={() => goTo(GENERAL_SECTION_ID)}
+                >
+                  <span className="section-folder-icon" aria-hidden="true">🗂️</span>
+                  <span className="section-folder-title">General (unsectioned)</span>
+                  <span className="section-folder-counts">
+                    {generalCounts.notes} {generalCounts.notes === 1 ? "note" : "notes"} ·{" "}
+                    {generalCounts.reminders}{" "}
+                    {generalCounts.reminders === 1 ? "reminder" : "reminders"}
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  function renderFolderCard(sec: Section) {
+    const counts = folderSummary(all, userSections, sec.id, now);
+    const isRenaming = renamingSectionId === sec.id;
+    return (
+      <div key={sec.id} className="section-folder-card">
+        {isRenaming ? (
+          <div className="inline-rename">
+            <input
+              autoFocus
+              value={renameSectionValue}
+              onChange={(e) => setRenameSectionValue(e.target.value)}
+              aria-label="Rename section"
+            />
+            <button
+              type="button"
+              className="small-btn primary"
+              onClick={() => handleSaveRenameSection(sec.id)}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="small-btn"
+              onClick={() => setRenamingSectionId(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="section-folder-link"
+              onClick={() => goTo(sec.id)}
+            >
+              <span className="section-folder-icon" aria-hidden="true">
+                {counts.subsections > 0 ? "🗃️" : "📁"}
+              </span>
+              <span className="section-folder-title">{sec.name}</span>
+              <span className="section-folder-counts">
+                {counts.notes} {counts.notes === 1 ? "note" : "notes"} ·{" "}
+                {counts.reminders} {counts.reminders === 1 ? "reminder" : "reminders"}
+                {counts.subsections > 0
+                  ? ` · ${counts.subsections} ${counts.subsections === 1 ? "subsection" : "subsections"}`
+                  : ""}
+                {counts.dueInside > 0 ? ` · ${counts.dueInside} due` : ""}
+              </span>
+            </button>
+            <div className="section-folder-actions">
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={`Rename ${sec.name}`}
+                title="Rename section"
+                onClick={() => {
+                  setRenamingSectionId(sec.id);
+                  setRenameSectionValue(sec.name);
+                }}
+              >
+                ✏️
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={`Delete ${sec.name}`}
+                title="Delete section"
+                onClick={() => handleDeleteSection(sec)}
+              >
+                🗑️
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   const sidebarCounts = {
     due: homeSections.due.length,
     total: all.length,
@@ -276,6 +487,8 @@ export function Notes({
     setQuery("");
     setNavOpen(false);
     setRenamingSectionId(null);
+    setMovingSectionId(null);
+    setNewSectionName("");
     const main = document.querySelector(".main");
     if (main) main.scrollTop = 0;
   }
@@ -306,13 +519,20 @@ export function Notes({
         ? activeSectionObj.name
         : "General";
   const pageIcon =
-    activeSectionId === null ? "🏠" : activeSectionObj ? "📁" : "🗂️";
+    activeSectionId === null
+      ? "🏠"
+      : activeSectionObj
+        ? activeSectionPath.length > 1
+          ? "📂"
+          : "📁"
+        : "🗂️";
   const pageSub =
     activeSectionId === null
       ? `${homeSections.due.length} due · ${homeSections.upcoming.length} upcoming reminders · ${homeSections.notes.length} notes`
       : (() => {
           const c = sectionCounts(all, targetSectionId, now);
-          return `${c.notes} ${c.notes === 1 ? "note" : "notes"} · ${c.reminders} ${c.reminders === 1 ? "reminder" : "reminders"}${c.due ? ` · ${c.due} due` : ""}`;
+          const subs = subSections.length;
+          return `${c.notes} ${c.notes === 1 ? "note" : "notes"} · ${c.reminders} ${c.reminders === 1 ? "reminder" : "reminders"}${subs ? ` · ${subs} ${subs === 1 ? "subsection" : "subsections"}` : ""}${c.due ? ` · ${c.due} due` : ""}`;
         })();
 
   return (
@@ -392,26 +612,54 @@ export function Notes({
           )}
 
           <nav className="sidebar-nav">
-            {userSections.map((sec) => {
-              const c = sectionCounts(all, sec.id, now);
-              const active = activeSectionId === sec.id;
-              return (
-                <button
-                  key={sec.id}
-                  type="button"
-                  className={"nav-item" + (active ? " active" : "")}
-                  onClick={() => goTo(sec.id)}
-                >
-                  <span className="nav-icon">📁</span>
-                  <span className="nav-label">{sec.name}</span>
-                  {c.due > 0 ? (
-                    <span className="nav-count due">{c.due}</span>
-                  ) : c.notes + c.reminders > 0 ? (
-                    <span className="nav-count">{c.notes + c.reminders}</span>
-                  ) : null}
-                </button>
-              );
-            })}
+            {(() => {
+              // The section tree, depth-first; rows under a folded section are skipped.
+              let hiddenBelow = Infinity;
+              return flattenSectionTree(userSections).map(({ section: sec, depth, childCount }) => {
+                if (depth > hiddenBelow) return null;
+                const open = expandedSections.has(sec.id);
+                hiddenBelow = childCount > 0 && !open ? depth : Infinity;
+                const c = folderSummary(all, userSections, sec.id, now);
+                const active = activeSectionId === sec.id;
+                // Folded rows count everything inside; unfolded rows just their own items.
+                const due = open ? c.due : c.dueInside;
+                const items = open ? c.notes + c.reminders : c.itemsInside;
+                return (
+                  <div
+                    key={sec.id}
+                    className={"nav-tree-row" + (active ? " active" : "")}
+                    style={{ paddingLeft: `${Math.min(depth, 8) * 14}px` }}
+                  >
+                    {childCount > 0 ? (
+                      <button
+                        type="button"
+                        className={"nav-toggle" + (open ? " open" : "")}
+                        aria-label={`${open ? "Fold" : "Unfold"} ${sec.name}`}
+                        aria-expanded={open}
+                        onClick={() => setExpanded(sec.id, !open)}
+                      >
+                        ▸
+                      </button>
+                    ) : (
+                      <span className="nav-toggle-spacer" aria-hidden="true" />
+                    )}
+                    <button
+                      type="button"
+                      className={"nav-item" + (active ? " active" : "")}
+                      onClick={() => goTo(sec.id)}
+                    >
+                      <span className="nav-icon">{depth > 0 ? "📂" : "📁"}</span>
+                      <span className="nav-label">{sec.name}</span>
+                      {due > 0 ? (
+                        <span className="nav-count due">{due}</span>
+                      ) : items > 0 ? (
+                        <span className="nav-count">{items}</span>
+                      ) : null}
+                    </button>
+                  </div>
+                );
+              });
+            })()}
             {(generalCounts.notes > 0 || generalCounts.reminders > 0) && (
               <button
                 type="button"
@@ -466,6 +714,14 @@ export function Notes({
             <button type="button" className="crumb" onClick={() => goTo(null)}>
               Home
             </button>
+            {activeSectionPath.slice(0, -1).map((s) => (
+              <span key={s.id} className="crumb-part">
+                <span className="crumb-sep">/</span>
+                <button type="button" className="crumb" onClick={() => goTo(s.id)}>
+                  {s.name}
+                </button>
+              </span>
+            ))}
             {activeSectionId !== null && (
               <>
                 <span className="crumb-sep">/</span>
@@ -528,6 +784,19 @@ export function Notes({
                 </div>
               ) : (
                 <>
+                  {activeSectionPath.length > 1 && (
+                    <nav className="page-parents" aria-label="Inside">
+                      <span className="muted">in</span>
+                      {activeSectionPath.slice(0, -1).map((p, i) => (
+                        <span key={p.id} className="page-parent">
+                          {i > 0 && <span className="crumb-sep">›</span>}
+                          <button type="button" className="crumb" onClick={() => goTo(p.id)}>
+                            {p.name}
+                          </button>
+                        </span>
+                      ))}
+                    </nav>
+                  )}
                   <h1 className="page-title">{pageTitle}</h1>
                   <p className="page-sub">{pageSub}</p>
                 </>
@@ -547,6 +816,18 @@ export function Notes({
                 </button>
                 <button
                   type="button"
+                  className="small-btn"
+                  aria-expanded={movingSectionId === activeSectionObj.id}
+                  onClick={() =>
+                    setMovingSectionId((cur) =>
+                      cur === activeSectionObj.id ? null : activeSectionObj.id,
+                    )
+                  }
+                >
+                  📦 Move
+                </button>
+                <button
+                  type="button"
                   className="small-btn danger-outline"
                   onClick={() => handleDeleteSection(activeSectionObj)}
                 >
@@ -555,6 +836,15 @@ export function Notes({
               </div>
             )}
           </header>
+
+          {activeSectionObj && movingSectionId === activeSectionObj.id && (
+            <MoveSectionPanel
+              section={activeSectionObj}
+              sections={userSections}
+              onMove={(parentId) => handleMoveSection(activeSectionObj.id, parentId)}
+              onCancel={() => setMovingSectionId(null)}
+            />
+          )}
 
           {!isInstalled() &&
             canPromptInstall() &&
@@ -626,13 +916,17 @@ export function Notes({
             </SectionBlock>
           ) : activeSectionId !== null ? (
             /* ---- INSIDE A SECTION FOLDER VIEW ---- */
-            <SectionFolderContent
-              allNotes={all}
-              sectionId={targetSectionId}
-              sectionName={activeSectionObj ? activeSectionObj.name : "General"}
-              renderReminderCard={(n) => renderReminderCard(n, null)}
-              renderNoteCard={(n) => renderNoteCard(n, null)}
-            />
+            <>
+              {activeSectionObj && renderSectionsPanel(subSections, false)}
+              <SectionFolderContent
+                allNotes={all}
+                sectionId={targetSectionId}
+                sectionName={activeSectionObj ? activeSectionObj.name : "General"}
+                hasSubsections={subSections.length > 0}
+                renderReminderCard={(n) => renderReminderCard(n, null)}
+                renderNoteCard={(n) => renderNoteCard(n, null)}
+              />
+            </>
           ) : (
             /* ---- HOME VIEW ---- */
             <>
@@ -650,133 +944,13 @@ export function Notes({
               )}
 
               {/* Sections (Folders) gallery */}
-              <section className="sections-panel" aria-label="Sections">
-                <div className="block-head">
-                  <h2 className="block-title">Sections</h2>
-                  <p className="muted small">
-                    Click a section to open its folder.
-                  </p>
-                </div>
-
-                <form className="section-create-form" onSubmit={handleCreateSection}>
-                  <input
-                    value={newSectionName}
-                    onChange={(e) => setNewSectionName(e.target.value)}
-                    placeholder="New section, e.g. Work, Personal, Shopping…"
-                    maxLength={LIMITS.sectionNameChars}
-                    aria-label="New section name"
-                  />
-                  <button type="submit" className="primary" disabled={!newSectionName.trim()}>
-                    + Create section
-                  </button>
-                </form>
-
-                {userSections.length === 0 && generalCounts.notes + generalCounts.reminders === 0 ? (
-                  <p className="muted small center-text sections-empty">
-                    No sections yet. Create one above to organise your notes and reminders into folders.
-                  </p>
-                ) : (
-                  <div className="section-folders-grid">
-                    {userSections.map((sec) => {
-                      const counts = sectionCounts(all, sec.id, now);
-                      const isRenaming = renamingSectionId === sec.id;
-                      return (
-                        <div key={sec.id} className="section-folder-card">
-                          {isRenaming ? (
-                            <div className="inline-rename">
-                              <input
-                                autoFocus
-                                value={renameSectionValue}
-                                onChange={(e) => setRenameSectionValue(e.target.value)}
-                                aria-label="Rename section"
-                              />
-                              <button
-                                type="button"
-                                className="small-btn primary"
-                                onClick={() => handleSaveRenameSection(sec.id)}
-                              >
-                                Save
-                              </button>
-                              <button
-                                type="button"
-                                className="small-btn"
-                                onClick={() => setRenamingSectionId(null)}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                className="section-folder-link"
-                                onClick={() => goTo(sec.id)}
-                              >
-                                <span className="section-folder-icon" aria-hidden="true">📁</span>
-                                <span className="section-folder-title">{sec.name}</span>
-                                <span className="section-folder-counts">
-                                  {counts.notes} {counts.notes === 1 ? "note" : "notes"} ·{" "}
-                                  {counts.reminders}{" "}
-                                  {counts.reminders === 1 ? "reminder" : "reminders"}
-                                  {counts.due > 0 ? ` · ${counts.due} due` : ""}
-                                </span>
-                              </button>
-                              <div className="section-folder-actions">
-                                <button
-                                  type="button"
-                                  className="icon-btn"
-                                  aria-label={`Rename ${sec.name}`}
-                                  title="Rename section"
-                                  onClick={() => {
-                                    setRenamingSectionId(sec.id);
-                                    setRenameSectionValue(sec.name);
-                                  }}
-                                >
-                                  ✏️
-                                </button>
-                                <button
-                                  type="button"
-                                  className="icon-btn"
-                                  aria-label={`Delete ${sec.name}`}
-                                  title="Delete section"
-                                  onClick={() => handleDeleteSection(sec)}
-                                >
-                                  🗑️
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {(generalCounts.notes > 0 || generalCounts.reminders > 0) && (
-                      <div className="section-folder-card general-folder">
-                        <button
-                          type="button"
-                          className="section-folder-link"
-                          onClick={() => goTo(GENERAL_SECTION_ID)}
-                        >
-                          <span className="section-folder-icon" aria-hidden="true">🗂️</span>
-                          <span className="section-folder-title">General (unsectioned)</span>
-                          <span className="section-folder-counts">
-                            {generalCounts.notes}{" "}
-                            {generalCounts.notes === 1 ? "note" : "notes"} ·{" "}
-                            {generalCounts.reminders}{" "}
-                            {generalCounts.reminders === 1 ? "reminder" : "reminders"}
-                          </span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </section>
+              {renderSectionsPanel(topSections, true)}
 
               {/* Reminders calendar with colour coding & filtering */}
               <div id="calendar">
                 <ReminderCalendar
                   notes={all}
-                  sections={userSections}
+                  sections={pathNamedSections}
                   now={now}
                   colorFilter={colorFilter}
                   onColorFilterChange={setColorFilter}
@@ -849,12 +1023,14 @@ function SectionFolderContent({
   allNotes,
   sectionId,
   sectionName,
+  hasSubsections = false,
   renderReminderCard,
   renderNoteCard,
 }: {
   allNotes: Note[];
   sectionId: string | null;
   sectionName: string;
+  hasSubsections?: boolean;
   renderReminderCard: (n: Note) => ReactNode;
   renderNoteCard: (n: Note) => ReactNode;
 }) {
@@ -864,7 +1040,7 @@ function SectionFolderContent({
     return (
       <ul className="notes">
         <li className="note empty">
-          No notes or reminders in <b>{sectionName}</b> yet.
+          No notes or reminders {hasSubsections ? "directly " : ""}in <b>{sectionName}</b> yet.
           <br />
           Use the <b>New Note</b> or <b>New Reminder</b> buttons above to add one!
         </li>
@@ -887,6 +1063,87 @@ function SectionFolderContent({
         </SectionBlock>
       )}
     </>
+  );
+}
+
+/* ---- Nested section helpers ---- */
+
+/** Indented <option>s for every section, subsections under their parents. */
+function SectionTreeOptions({
+  sections,
+  exclude,
+}: {
+  sections: Section[];
+  /** Section ids to leave out (e.g. a section can't be moved inside itself). */
+  exclude?: ReadonlySet<string>;
+}) {
+  return (
+    <>
+      {flattenSectionTree(sections)
+        .filter((r) => !exclude?.has(r.section.id))
+        .map(({ section, depth }) => (
+          <option key={section.id} value={section.id}>
+            {"\u00a0\u00a0\u00a0".repeat(depth)}
+            {depth > 0 ? "└ 📂 " : "📁 "}
+            {section.name}
+          </option>
+        ))}
+    </>
+  );
+}
+
+/** "Move this section into…" picker shown under a section's page header. */
+function MoveSectionPanel({
+  section,
+  sections,
+  onMove,
+  onCancel,
+}: {
+  section: Section;
+  sections: Section[];
+  onMove: (parentId: string | null) => void;
+  onCancel: () => void;
+}) {
+  const current = section.parentId && sections.some((s) => s.id === section.parentId)
+    ? section.parentId
+    : null;
+  const [target, setTarget] = useState<string>(current ?? "");
+  // Can't move a section inside itself or inside one of its own subsections.
+  const exclude = new Set([section.id, ...descendantSectionIds(sections, section.id)]);
+  const targetId = target || null;
+  const unchanged = targetId === current;
+  const allowed = canMoveSection(sections, section.id, targetId);
+  return (
+    <form
+      className="move-section-panel"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!unchanged && allowed) onMove(targetId);
+      }}
+    >
+      <label>
+        <span className="move-section-label">
+          Move <b>{section.name}</b> (and everything in it) into:
+        </span>
+        <select
+          className="section-select"
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          aria-label="New parent section"
+        >
+          <option value="">🏠 Top level (no parent)</option>
+          <SectionTreeOptions sections={sections} exclude={exclude} />
+        </select>
+      </label>
+      <div className="move-section-actions">
+        <button type="submit" className="small-btn primary" disabled={unchanged || !allowed}>
+          Move here
+        </button>
+        <button type="button" className="small-btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -983,11 +1240,7 @@ function NoteComposer({
             aria-label="Note section"
           >
             <option value="">🗂️ General (No section)</option>
-            {sections.map((s) => (
-              <option key={s.id} value={s.id}>
-                📁 {s.name}
-              </option>
-            ))}
+            <SectionTreeOptions sections={sections} />
           </select>
         )}
       </div>
@@ -1228,11 +1481,7 @@ function ReminderComposer({
             aria-label="Reminder section"
           >
             <option value="">🗂️ General (No section)</option>
-            {sections.map((s) => (
-              <option key={s.id} value={s.id}>
-                📁 {s.name}
-              </option>
-            ))}
+            <SectionTreeOptions sections={sections} />
           </select>
         )}
       </div>
@@ -1927,11 +2176,7 @@ function EditItemRow({
             onChange={(e) => setSectionId(e.target.value || null)}
           >
             <option value="">🗂️ General</option>
-            {sections.map((s) => (
-              <option key={s.id} value={s.id}>
-                📁 {s.name}
-              </option>
-            ))}
+            <SectionTreeOptions sections={sections} />
           </select>
         )}
       </div>
