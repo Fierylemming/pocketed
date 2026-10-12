@@ -8,9 +8,9 @@
 //   user -> Google -> GET /v1/google/callback?code&state (public, one-time state)
 //   Worker swaps the code for tokens, then redirects back to the app with
 //   #google=connected (or #google=error&message=…).
-//   app  -> GET /v1/calendar/feed -> { source: "google", calendar, events }
+//   app  -> GET /v1/calendar/feed -> { source: "google", calendar, calendars, events }
 
-import { skipGoogleEvent, type GoogleEvent, type GoogleFeed } from "@pocketed/shared";
+import { skipGoogleEvent, type GoogleCalendar, type GoogleEvent, type GoogleFeed } from "@pocketed/shared";
 import { CalendarInputError, type Fetcher } from "./calendar";
 import type { GoogleAccountRow, Store } from "./store";
 
@@ -34,6 +34,7 @@ const DAY = 86_400_000;
 const WINDOW_DAYS = 61;
 const PAGE_SIZE = 250;
 const MAX_PAGES = 4;
+const CALENDAR_CONCURRENCY = 4;
 
 const EVENT_FIELDS =
   "nextPageToken,items(id,iCalUID,status,summary,description,location,colorId," +
@@ -311,7 +312,7 @@ async function apiGet<T>(fetcher: Fetcher, url: string, token: string): Promise<
   return { status: res.status, body: res.ok ? await readJson<T>(res) : null };
 }
 
-/** The upcoming events of the signed-in account's main calendar, with colours. */
+/** Upcoming events from every readable calendar on the account, with colours. */
 export async function googleFeed(
   store: Store,
   cfg: GoogleConfig,
@@ -357,28 +358,76 @@ export async function googleFeed(
     maxAttendees: "1", // just enough to see your own reply
     fields: EVENT_FIELDS,
   });
-  const eventsUrl = (pageToken?: string) => {
-    const q = new URLSearchParams(base);
-    if (pageToken) q.set("pageToken", pageToken);
-    return `${API}/calendars/primary/events?${q}`;
-  };
-
-  type Page = { items?: GoogleEvent[]; nextPageToken?: string };
-  const [calendar, first] = await Promise.all([
-    get<GoogleFeed["calendar"]>(`${API}/users/me/calendarList/primary?fields=colorId,backgroundColor`),
-    get<Page>(eventsUrl()),
-  ]);
-  const events: GoogleEvent[] = [];
-  let page: Page = first;
+  // Include owned, shared and subscribed calendars, even if hidden/unchecked
+  // in Google's UI. Free/busy-only calendars cannot supply event details.
+  type CalendarEntry = GoogleCalendar & { accessRole?: string; deleted?: boolean };
+  type CalendarPage = { items?: CalendarEntry[]; nextPageToken?: string };
+  const calendars = new Map<string, GoogleCalendar>();
+  let listToken: string | undefined;
   for (let i = 0; ; i++) {
-    for (const ev of page.items ?? []) if (!skipGoogleEvent(ev)) events.push(ev);
-    if (!page.nextPageToken || i + 1 >= MAX_PAGES) break;
-    page = await get<Page>(eventsUrl(page.nextPageToken));
+    const q = new URLSearchParams({
+      minAccessRole: "reader",
+      showHidden: "true",
+      maxResults: String(PAGE_SIZE),
+      fields: "nextPageToken,items(id,primary,colorId,backgroundColor,accessRole,deleted)",
+    });
+    if (listToken) q.set("pageToken", listToken);
+    const page = await get<CalendarPage>(`${API}/users/me/calendarList?${q}`);
+    for (const cal of page.items ?? []) {
+      if (!cal.id || cal.deleted || !["reader", "writer", "owner"].includes(cal.accessRole ?? "")) continue;
+      calendars.set(cal.id, {
+        id: cal.id,
+        primary: cal.primary === true,
+        colorId: cal.colorId,
+        backgroundColor: cal.backgroundColor,
+      });
+    }
+    if (!page.nextPageToken) break;
+    // Never return a partial snapshot: reconciliation would delete reminders
+    // belonging to calendars/events that we hadn't fetched yet.
+    if (i + 1 >= MAX_PAGES) {
+      throw new CalendarInputError(
+        "Google returned too many calendars to import safely. Existing reminders were kept.",
+        502,
+      );
+    }
+    listToken = page.nextPageToken;
   }
 
+  type Page = { items?: GoogleEvent[]; nextPageToken?: string };
+  const events: GoogleEvent[] = [];
+  // Bound concurrent Google requests rather than firing one per calendar.
+  const allCalendars = [...calendars.values()];
+  for (let offset = 0; offset < allCalendars.length; offset += CALENDAR_CONCURRENCY) {
+    const batches = await Promise.all(allCalendars.slice(offset, offset + CALENDAR_CONCURRENCY).map(async (cal) => {
+      const items: GoogleEvent[] = [];
+      let pageToken: string | undefined;
+      for (let i = 0; ; i++) {
+        const q = new URLSearchParams(base);
+        if (pageToken) q.set("pageToken", pageToken);
+        const page = await get<Page>(`${API}/calendars/${encodeURIComponent(cal.id)}/events?${q}`);
+        for (const ev of page.items ?? []) {
+          if (!skipGoogleEvent(ev)) items.push({ ...ev, calendarId: cal.id });
+        }
+        if (!page.nextPageToken) break;
+        if (i + 1 >= MAX_PAGES) {
+          throw new CalendarInputError(
+            "Google returned too many events to import safely. Existing reminders were kept.",
+            502,
+          );
+        }
+        pageToken = page.nextPageToken;
+      }
+      return items;
+    }));
+    for (const batch of batches) events.push(...batch);
+  }
+
+  const primary = allCalendars.find((cal) => cal.primary);
   return {
     source: "google",
-    calendar: { colorId: calendar.colorId, backgroundColor: calendar.backgroundColor },
+    calendar: { colorId: primary?.colorId, backgroundColor: primary?.backgroundColor },
+    calendars: allCalendars,
     events,
   };
 }

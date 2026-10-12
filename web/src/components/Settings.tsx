@@ -393,8 +393,9 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
           {googleAvailable ? (
             <>
               <p className="muted small">
-                Signing in with Google also copies each event's colour, so your colour-coding
-                carries over. Pocketed can only read your calendar, never change it.
+                Signing in with Google imports all calendars on your account that you can read,
+                including shared and subscribed calendars, with their colours. Pocketed can only
+                read your calendars, never change them.
               </p>
               {showLink ? (
                 form
@@ -434,6 +435,12 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
                 ? ` · ${status.feed}`
                 : ""}
           </p>
+          {status.mode === "google" && (
+            <p className="muted small">
+              Importing all readable calendars, including shared, subscribed and hidden calendars.
+              Events without their own colour use their calendar's colour.
+            </p>
+          )}
           <p className="muted small">
             {plural(imported, "upcoming event")} · alerts {lead} min before and at the start ·{" "}
             {local.lastCheck ? `checked ${ago(local.lastCheck)}` : "not checked on this device yet"}
@@ -448,8 +455,8 @@ function GoogleCalendar({ manager }: { manager: SyncManager }) {
           )}
           {status.mode !== "google" && googleAvailable && !replacing && (
             <p className="muted small">
-              Want your Google colours too? Sign in with Google instead — your existing imported
-              reminders are kept and recoloured.
+              Want all your calendars and their colours? Sign in with Google instead.
+              Existing reminders from your primary calendar are kept and recoloured.
             </p>
           )}
           {replacing ? (

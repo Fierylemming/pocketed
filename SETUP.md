@@ -77,9 +77,9 @@ npx wrangler pages deploy web/dist --project-name=pocketed-yourname --branch=mai
 Check the server with `https://<worker>/health`: it should report `"version":"2"`.
 
 The secret-link Google Calendar import needs no extra setup: the link is pasted in the app's ⚙️ Settings and
-stored in D1. **Sign in with Google** (which copies event colours) needs step 8 first.
+stored in D1. **Sign in with Google** (which imports all readable calendars and copies event colours) needs step 8 first.
 
-## 8. Sign in with Google (optional, once — for Google Calendar colours)
+## 8. Sign in with Google (optional, once — for multiple calendars and Google colours)
 
 Google only reveals event colours to apps you sign in to, so Pocketed needs its own Google "OAuth client".
 It's free and takes about 10 minutes at **console.cloud.google.com**:
@@ -108,8 +108,10 @@ It's free and takes about 10 minutes at **console.cloud.google.com**:
    - Secrets stay in place across future deploys, so this is a one-off. From a terminal, the same is
      `npx wrangler secret put GOOGLE_CLIENT_ID` (and `…_SECRET`) in `server/`.
 
-Then in the app: ⚙️ Settings → Google Calendar → **Sign in with Google**. If a secret link was connected,
-your imported reminders are kept and recoloured.
+Then in the app: ⚙️ Settings → Google Calendar → **Sign in with Google**. This imports all readable
+calendars on your account, including shared/subscribed and hidden calendars. Existing Google connections
+already have the required read-only scope: deploy both server and website, then tap **Check now**.
+If a primary-calendar secret link was connected, its imported reminders are kept and recoloured.
 
 If the Worker is served from a different address than its `workers.dev` URL (e.g. a custom domain), set
 that callback address as the Worker secret `GOOGLE_REDIRECT_URI` too:

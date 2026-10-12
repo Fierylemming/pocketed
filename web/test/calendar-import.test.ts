@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { calendarNoteId, type Op } from "@pocketed/shared";
+import { calendarNoteId, type GoogleFeed, type Op } from "@pocketed/shared";
 import { SyncManager } from "../src/store";
 import {
   importCalendarNow,
@@ -174,4 +174,50 @@ describe("importCalendarNow", () => {
     await m.syncOnce();
     expect(server.srv.log.find((o) => o.noteId === id && o.color === "#0b8043")).toBeTruthy();
   });
+
+  it("imports multiple calendars, syncs them, and keeps reminders when a check fails", async () => {
+    const event = {
+      iCalUID: "appointment@google.com", summary: "Appointment",
+      start: { dateTime: "2026-10-12T10:00:00Z" },
+      end: { dateTime: "2026-10-12T11:00:00Z" },
+    };
+    const feed: GoogleFeed = {
+      source: "google", calendar: { colorId: "14" },
+      calendars: [
+        { id: "primary-id", primary: true, colorId: "14" },
+        { id: "family-id", colorId: "8" },
+      ],
+      events: [
+        { ...event, calendarId: "primary-id" },
+        { ...event, calendarId: "family-id", summary: "Family appointment" },
+      ],
+    };
+    server.srv.google = feed;
+    const m = manager();
+    expect(await importCalendarNow(m)).toEqual({ added: 2, updated: 0, removed: 0 });
+    expect(importedCount(m.state)).toBe(2);
+    expect(m.state.notes[calendarNoteId(event.iCalUID)].color).toBe("#039be5");
+    expect(Object.values(m.state.notes).find((n) => n.title === "Family appointment")?.color).toBe("#0b8043");
+    await m.syncOnce();
+    expect(server.srv.log.filter((o) => o.source === "gcal")).toHaveLength(2);
+
+    // A second device uses the same calendar-scoped IDs, without duplicates.
+    localStorage.removeItem("pocketed.v2.state");
+    const second = manager();
+    expect(await importCalendarNow(second)).toEqual({ added: 0, updated: 0, removed: 0 });
+    const before = JSON.stringify(second.state.notes);
+    server.srv.feed.status = 502;
+    await expect(importCalendarNow(second)).rejects.toThrow();
+    expect(JSON.stringify(second.state.notes)).toBe(before);
+    expect(loadCalendarState().lastError).toBeTruthy();
+
+    // A successful snapshot after unsubscribing removes only that calendar.
+    server.srv.feed.status = 200;
+    feed.calendars = feed.calendars!.filter((c) => c.primary);
+    feed.events = feed.events.filter((e) => e.calendarId === "primary-id");
+    expect(await importCalendarNow(second)).toEqual({ added: 0, updated: 0, removed: 1 });
+    expect(importedCount(second.state)).toBe(1);
+    expect(second.state.notes[calendarNoteId(event.iCalUID)].title).toBe("Appointment");
+  });
+
 });

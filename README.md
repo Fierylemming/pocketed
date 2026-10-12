@@ -86,15 +86,17 @@ Connect once in ⚙️ Settings → **Google Calendar** and your events show up 
 There are two ways to connect:
 
 - **Sign in with Google** (recommended): copies each event's **exact Google colour**, so colour-coding
-  carries over. Pocketed asks for read-only access to your calendar and reads your main calendar. The server
-  owner has to set this up once first (SETUP.md, step 8). Until then the button doesn't appear.
+  carries over. Pocketed asks for read-only access and imports **all readable calendars** on your account:
+  primary, additional, shared and subscribed calendars (including hidden/unchecked ones). Calendars that
+  only expose free/busy information are skipped. The server owner has to set this up once first
+  (SETUP.md, step 8). Until then the button doesn't appear.
 - **Secret link**: on a computer, open **calendar.google.com** → ⚙️ **Settings** → under **Settings for my
   calendars** click your calendar → **Integrate calendar** → copy **Secret address in iCal format**, then
-  paste it into Pocketed. Google's link carries no colours, so these reminders are **Sky**.
+  paste it into Pocketed. A secret link imports **only that one calendar** and carries no colours, so these reminders are **Sky**.
 
 What happens:
 
-- Events in the **next 60 days** become reminders, labelled 📅 Google Calendar.
+- Events in the **next 60 days** become reminders, labelled 📅 Google Calendar (up to the earliest 500 across all calendars).
 - **Colours** (with Sign in with Google): an event keeps the colour you gave it in Google (Tomato, Sage,
   Basil…). Events without their own colour take the calendar's colour. Google's colours appear as extra chips
   in the calendar's colour filter, next to Pocketed's six. Changing an event's colour in Google updates the
@@ -109,10 +111,15 @@ What happens:
   choice also stays when connected by secret link (which has no colours).
   A cancelled event's reminder is removed, and once an event has ended its reminder is cleared away.
 - ✅ or 🗑️ on an imported reminder sticks. It only comes back if the event is moved to a new time.
-- Switching from the secret link to Sign in with Google keeps the same reminders and just recolours them.
+- Switching from a primary-calendar secret link to Sign in with Google keeps the same reminders and just recolours them.
   Only one connection is active at a time.
 - **Disconnect** removes the imported reminders and forgets the link, or revokes Pocketed's Google access.
 - The import is one-way: nothing is ever written back to Google.
+- Already signed in? No new permissions or reconnection are needed. After updating both the server and
+  website, use **Check now** (or wait for the next automatic check) to import your other calendars.
+  The calendar list is refreshed on every check, so newly added calendars are picked up automatically.
+- Events on different calendars remain separate, even when they share an event UID. Existing primary-calendar
+  reminder IDs stay unchanged. If any calendar fails to load, the check fails without removing reminders.
 
 How it works: the sync server keeps the connection and relays the calendar to the app; the app turns events
 into reminders. With a secret link the app receives the whole calendar file and reads it on the device (a
@@ -134,7 +141,7 @@ myaccount.google.com → Security → Third-party apps.
 
 ## Next steps (not built yet)
 
-- **Google Calendar extras**: choose which calendars to import (Sign in with Google reads the main one today),
+- **Google Calendar extras**: choose a subset of calendars to import (Sign in with Google reads all readable calendars),
   and optionally write back to Google.
 - **Closed-app reminders**: Web Push from the Worker, using a scheduled trigger to send alerts on time.
 - **Native Android app** (Expo, with a home-screen widget): the shared reminder helpers are ready for it.
