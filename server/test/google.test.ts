@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GoogleCalendar, GoogleEvent } from "@pocketed/shared";
+import type { GoogleCalendar, GoogleEvent, GoogleEventLabel } from "@pocketed/shared";
 import { handle } from "../src/worker";
 import { MemoryStore } from "../src/store";
 import { GOOGLE_SCOPE, normalizeReturnUrl } from "../src/google";
@@ -22,6 +22,9 @@ interface Call {
   auth: string | null;
 }
 
+/** GET /calendars/{id} — the calendar resource, which carries the events' labels. */
+const LABEL_CALL = /\/calendars\/[^/?]+(\?|$)/;
+
 /** A pretend Google: token endpoint, revoke, calendarList and events. */
 function fakeGoogle() {
   const calls: Call[] = [];
@@ -35,7 +38,10 @@ function fakeGoogle() {
       colorId: "14", backgroundColor: "#9fe1e7",
     }] }] as CalendarPage[],
     otherEvents: {} as Record<string, EventPage[]>,
+    /** labelProperties per calendar, as the calendar resource reports them. */
+    labels: {} as Record<string, { labelProperties?: { eventLabels?: GoogleEventLabel[] } }>,
     failCalendar: null as string | null,
+    failLabels: null as string | null,
     unauthorizedOnce: false,
     pages: [
       {
@@ -104,6 +110,12 @@ function fakeGoogle() {
       if (u.pathname.endsWith("/users/me/calendarList")) {
         const page = Number(u.searchParams.get("pageToken") ?? 0);
         return Response.json(g.calendarPages[page]);
+      }
+      const calPath = /\/calendars\/([^/]+)$/.exec(u.pathname);
+      if (calPath) {
+        const id = decodeURIComponent(calPath[1]);
+        if (id === g.failLabels) return new Response("not yours", { status: 403 });
+        return Response.json(g.labels[id] ?? {});
       }
       const eventPath = /\/calendars\/([^/]+)\/events$/.exec(u.pathname);
       if (eventPath) {
@@ -269,6 +281,45 @@ describe("sign in with Google", () => {
     expect(q.get("timeMin")).toBe(new Date(1_000_000).toISOString());
     expect(evCall.auth).toBe("Bearer at-1"); // the token from sign-in, reused
     expect(a.g.calls.filter((c) => c.url.includes("pageToken=p2"))).toHaveLength(1);
+    expect(q.get("fields")).toContain("eventLabelId");
+    // No event wears a label, so no calendar is asked for its labels.
+    expect(a.g.calls.filter((c) => LABEL_CALL.test(c.url))).toHaveLength(0);
+  });
+
+  it("reads an event's colour from its calendar's labels, and copes with a calendar that won't share them", async () => {
+    const a = await app();
+    await a.signIn();
+    // Avocado: one of the 24 colours Google added for events in June 2026.
+    const labelled = a.g.pages[0].items![0] as GoogleEvent;
+    labelled.eventLabelId = "label-avocado";
+    a.g.labels["me@gmail.com"] = {
+      labelProperties: {
+        eventLabels: [
+          { id: "label-avocado", backgroundColor: "#c0ca33", name: "Avocado" },
+          { id: "label-other", backgroundColor: "#7c54c0" },
+        ],
+      },
+    };
+    const r = await a.call("/v1/calendar/feed");
+    expect(r.status).toBe(200);
+    expect(r.body.events[0]).toMatchObject({ id: "a", eventLabelId: "label-avocado" });
+    // Only the label this account's events wear is relayed, not all 200.
+    expect(r.body.calendars[0].eventLabels).toEqual([
+      { id: "label-avocado", backgroundColor: "#c0ca33", name: "Avocado" },
+    ]);
+    const labelCall = a.g.calls.filter((c) => LABEL_CALL.test(c.url));
+    expect(labelCall).toHaveLength(1); // only calendars with a labelled event
+    expect(new URL(labelCall[0].url).searchParams.get("fields")).toBe("labelProperties");
+    expect(labelCall[0].auth).toBe("Bearer at-1");
+
+    // A calendar that won't share its labels doesn't break the import: the
+    // event falls back to its colour id, or its calendar's colour.
+    a.g.calls.length = 0;
+    a.g.failLabels = "me@gmail.com";
+    const again = await a.call("/v1/calendar/feed");
+    expect(again.status).toBe(200);
+    expect(again.body.calendars[0].eventLabels).toBeUndefined();
+    expect(again.body.events[0].eventLabelId).toBe("label-avocado");
   });
 
   it("paginates the calendar list and each calendar, including shared and hidden calendars", async () => {

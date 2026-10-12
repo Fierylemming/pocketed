@@ -3,6 +3,7 @@ import { calendarNoteId, reconcileCalendar, type CalendarEvent } from "../src/ca
 import {
   googleCalendarColor,
   googleEventColor,
+  googleEventLabels,
   googleFeedToCalendarEvents,
   type GoogleFeed,
 } from "../src/google-calendar";
@@ -79,6 +80,35 @@ describe("Google colours", () => {
     expect(googleEventColor({ colorId: "11" }, null)).toBe("#d50000"); // Tomato
     expect(googleEventColor({ colorId: "2" }, null)).toBe("#33b679"); // Sage
     expect(googleEventColor({ colorId: "10" }, "#039be5")).toBe("#0b8043"); // Basil
+  });
+
+  it("take an event's own colour from its label (Google's 24 event colours, and custom ones)", () => {
+    const avocado = new Map([["label-1", "#c0ca33" as const]]);
+    expect(googleEventColor({ eventLabelId: "label-1" }, "#039be5", avocado)).toBe("#c0ca33");
+    // A label is what the UI shows, so it wins over a stale legacy colour id…
+    expect(
+      googleEventColor({ eventLabelId: "label-2", colorId: "10" }, null, new Map([["label-2", "#7c54c0"]])),
+    ).toBe("#7c54c0");
+    // …but an unreadable label still falls back to the id, then the calendar.
+    expect(googleEventColor({ eventLabelId: "gone", colorId: "10" }, "#039be5", avocado)).toBe("#0b8043");
+    expect(googleEventColor({ eventLabelId: "gone" }, "#039be5", avocado)).toBe("#039be5");
+    expect(googleEventColor({ eventLabelId: "label-1" }, "#039be5", null)).toBe("#039be5");
+  });
+
+  it("index a calendar's labels by id, ignoring unusable ones", () => {
+    expect(
+      googleEventLabels({
+        id: "me",
+        eventLabels: [
+          { id: "a", backgroundColor: "#C0CA33" }, // stored lowercase
+          { id: "b", backgroundColor: "avocado" },
+          { id: "", backgroundColor: "#123456" },
+          { id: "c" } as never,
+        ],
+      }),
+    ).toEqual(new Map([["a", "#c0ca33"]]));
+    expect(googleEventLabels(null).size).toBe(0);
+    expect(googleEventLabels({ id: "me" }).size).toBe(0);
   });
 
   it("fall back to the calendar's colour (modern shade, or a custom one exactly)", () => {
@@ -215,6 +245,36 @@ describe("Google events -> calendar events", () => {
     }, opts);
     expect(reconcileCalendar(imported.state, remaining, NOW + 3))
       .toMatchObject({ added: 0, updated: 0, removed: 1 });
+  });
+
+  it("resolves an event's label against its own calendar, falling back when unknown", () => {
+    const at = (iCalUID: string, extra: Partial<GoogleFeed["events"][number]> = {}) => ({
+      iCalUID,
+      start: { dateTime: "2026-10-12T10:00:00Z" },
+      end: { dateTime: "2026-10-12T11:00:00Z" },
+      ...extra,
+    });
+    const multi: GoogleFeed = {
+      source: "google", calendar: { colorId: "14" },
+      calendars: [
+        // The same label id on two calendars is two different colours.
+        { id: "me", primary: true, colorId: "14", eventLabels: [{ id: "L", backgroundColor: "#c0ca33" }] },
+        { id: "family", colorId: "8", eventLabels: [{ id: "L", backgroundColor: "#ad1457" }] },
+      ],
+      events: [
+        at("a", { calendarId: "me", eventLabelId: "L" }),
+        at("b", { calendarId: "family", eventLabelId: "L" }),
+        at("c", { calendarId: "family", eventLabelId: "gone" }), // calendar's labels not read
+        at("d", { calendarId: "family", colorId: "11" }),
+      ],
+    };
+    const converted = googleFeedToCalendarEvents(multi, opts);
+    const color = (key: string) => converted.find((e) => e.key.includes(key))?.color;
+    expect(color('"a"')).toBeUndefined(); // the primary calendar's key isn't prefixed
+    expect(converted.find((e) => e.key === "a")?.color).toBe("#c0ca33");
+    expect(color('["family","b"]')).toBe("#ad1457");
+    expect(color('["family","c"]')).toBe("#0b8043");
+    expect(color('["family","d"]')).toBe("#d50000");
   });
 
   it("uses stable recurring keys per calendar, including all-day events and moved instances", () => {

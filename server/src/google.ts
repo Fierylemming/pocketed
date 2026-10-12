@@ -10,7 +10,13 @@
 //   #google=connected (or #google=error&message=…).
 //   app  -> GET /v1/calendar/feed -> { source: "google", calendar, calendars, events }
 
-import { skipGoogleEvent, type GoogleCalendar, type GoogleEvent, type GoogleFeed } from "@pocketed/shared";
+import {
+  skipGoogleEvent,
+  type GoogleCalendar,
+  type GoogleEvent,
+  type GoogleEventLabel,
+  type GoogleFeed,
+} from "@pocketed/shared";
 import { CalendarInputError, type Fetcher } from "./calendar";
 import type { GoogleAccountRow, Store } from "./store";
 
@@ -37,8 +43,10 @@ const MAX_PAGES = 4;
 const CALENDAR_CONCURRENCY = 4;
 
 const EVENT_FIELDS =
-  "nextPageToken,items(id,iCalUID,status,summary,description,location,colorId," +
+  "nextPageToken,items(id,iCalUID,status,summary,description,location,colorId,eventLabelId," +
   "start,end,originalStartTime,recurringEventId,eventType,attendees(self,responseStatus))";
+/** The colour behind an event's `eventLabelId` lives here, not in the calendar list. */
+const LABEL_FIELDS = "labelProperties";
 
 export function redirectUriFor(cfg: GoogleConfig, reqUrl: URL): string {
   return cfg.redirectUri || `${reqUrl.origin}/v1/google/callback`;
@@ -421,6 +429,43 @@ export async function googleFeed(
       return items;
     }));
     for (const batch of batches) events.push(...batch);
+  }
+
+  // Since June 2026 an event can wear any of Google's 24 colours, or one of up
+  // to 200 custom shades per calendar; those arrive as a label id only, so the
+  // colour has to be fetched from the calendar resource. Only the calendars
+  // that actually have a labelled event are asked. (Google sends `eventLabelId`
+  // and the legacy `colorId` together without being asked, so we don't set
+  // eventLabelVersion=1 — with it set, Google ignores `colorId`, and that is
+  // our fallback for a calendar whose labels we couldn't read.)
+  const usedLabels = new Map<string, Set<string>>();
+  for (const ev of events) {
+    if (!ev.eventLabelId || !ev.calendarId) continue;
+    const used = usedLabels.get(ev.calendarId) ?? new Set<string>();
+    used.add(ev.eventLabelId);
+    usedLabels.set(ev.calendarId, used);
+  }
+  const labelledIds = [...usedLabels.keys()];
+  for (let offset = 0; offset < labelledIds.length; offset += CALENDAR_CONCURRENCY) {
+    const batch = await Promise.all(
+      labelledIds.slice(offset, offset + CALENDAR_CONCURRENCY).map(async (id) => {
+        try {
+          const cal = await get<{ labelProperties?: { eventLabels?: GoogleEventLabel[] } }>(
+            `${API}/calendars/${encodeURIComponent(id)}?fields=${LABEL_FIELDS}`,
+          );
+          // A calendar can hold 200 labels; only the ones its events wear are worth relaying.
+          return (cal.labelProperties?.eventLabels ?? []).filter((l) => usedLabels.get(id)?.has(l?.id));
+        } catch {
+          // A colour we can't read isn't worth failing the import over: the
+          // event keeps its legacy colour id, or its calendar's colour.
+          return null;
+        }
+      }),
+    );
+    batch.forEach((labels, i) => {
+      const cal = calendars.get(labelledIds[offset + i]);
+      if (cal && labels?.length) cal.eventLabels = labels;
+    });
   }
 
   const primary = allCalendars.find((cal) => cal.primary);

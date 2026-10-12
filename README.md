@@ -97,8 +97,9 @@ There are two ways to connect:
 What happens:
 
 - Events in the **next 60 days** become reminders, labelled 📅 Google Calendar (up to the earliest 500 across all calendars).
-- **Colours** (with Sign in with Google): an event keeps the colour you gave it in Google (Tomato, Sage,
-  Basil…). Events without their own colour take the calendar's colour. Google's colours appear as extra chips
+- **Colours** (with Sign in with Google): an event keeps the colour you gave it in Google — any of Google's
+  24 colours (Tomato, Sage, Basil, Avocado…), including custom shades mixed in Google's colour picker.
+  Events without their own colour take the calendar's colour. Google's colours appear as extra chips
   in the calendar's colour filter, next to Pocketed's six. Changing an event's colour in Google updates the
   reminder.
 - Timed events alert **30 minutes before** ("⏰ In 30 min") and again **when they start** ("📅 Starting now").
