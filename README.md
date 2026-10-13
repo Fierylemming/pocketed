@@ -68,6 +68,12 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded
   in **Google Calendar's palette** (Tomato, Basil, Peacock, Avocado…), with one-click colour filtering. The filter
   lists the colours your reminders actually use, so it stays short.
+- **Multi-day events** — an event that runs across several days (a holiday, a conference, an overnight
+  shift) shows on the calendar as one bar across all its days, like in Google Calendar. The bar keeps the same
+  row every day so it lines up. It is titled on its first day and again at the start of each new week row.
+  The event appears in the list for every day it covers, labelled with its whole range
+  ("📅 Mon 12 Oct – Fri 16 Oct · 5 days", and "now, day 3 of 5" while it's on). It still shows when it
+  started before the month you're viewing.
 
 ## Writing notes: the editor
 
@@ -135,6 +141,10 @@ What happens:
   Google updates the reminder.
 - Pocketed's earlier six colours (Ruby, Amber, Emerald, Sky, Violet, Rose) are gone: reminders that used them show
   the closest Google shade — Ruby as Flamingo, Emerald as Eucalyptus, and so on.
+- **Events that run across several days** keep their full length (all-day events from the first to the
+  last day, timed events from start to end), so the calendar shows them on every day they cover. An event
+  ending exactly at midnight doesn't spill into the next day. Reminders imported before this was added
+  pick up their end time on the next check, without losing anything you changed on them.
 - Timed events alert **30 minutes before** ("⏰ In 30 min") and again **when they start** ("📅 Starting now").
   All-day events alert once, at 9:00 on the day.
 - Repeating events are added one occurrence at a time; skipped, moved and cancelled occurrences are respected.

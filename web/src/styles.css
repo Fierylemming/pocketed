@@ -795,9 +795,12 @@ button.color-swatch.selected { box-shadow: 0 0 0 2px var(--accent); }
 }
 
 .calendar-grid {
+  /* Shared with the multi-day bars, which bridge the gap between cells. */
+  --cal-gap: 0.3rem;
+  --cal-pad: 0.4rem;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0.3rem;
+  gap: var(--cal-gap);
 }
 
 .calendar-weekday {
@@ -816,7 +819,7 @@ button.color-swatch.selected { box-shadow: 0 0 0 2px var(--accent); }
   align-items: stretch;
   justify-content: flex-start;
   min-height: 6.75rem;
-  padding: 0.4rem;
+  padding: var(--cal-pad);
   border-radius: var(--radius);
   background: var(--card);
   border: 1px solid var(--line);
@@ -857,6 +860,21 @@ button.color-swatch.selected { box-shadow: 0 0 0 2px var(--accent); }
 .calendar-pill-dot { width: 0.4rem; height: 0.4rem; border-radius: 50%; flex-shrink: 0; }
 .calendar-pill-text { overflow: hidden; text-overflow: ellipsis; }
 .calendar-more { font-size: 0.7rem; color: var(--text-2); padding-left: 0.2rem; }
+
+/* Events running across several days: one segment per day, joined into a bar. */
+.calendar-pill.span { font-weight: 600; position: relative; }
+.calendar-pill.span .calendar-pill-text { flex: 1; min-width: 0; }
+.calendar-pill.span.cont-before { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.calendar-pill.span.cont-after { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+/* Reach back to this cell's edge, and on across the gap to the next cell's edge. */
+.calendar-pill.span.join-left {
+  margin-left: calc(-1 * (var(--cal-pad) + 1px));
+  padding-left: calc(0.3rem + var(--cal-pad) + 1px);
+}
+.calendar-pill.span.join-right { margin-right: calc(-1 * (var(--cal-pad) + 1px + var(--cal-gap))); }
+.calendar-pill-dot.is-hidden { visibility: hidden; }
+/* Keeps lanes lined up where a day has nothing in that row. */
+.calendar-pill-spacer { visibility: hidden; }
 
 .calendar-details { border-top: 1px solid var(--line); padding-top: 0.9rem; }
 
@@ -1301,7 +1319,8 @@ button.color-swatch.selected { box-shadow: 0 0 0 2px var(--accent); }
   .section-select { min-width: 0; max-width: 100%; }
   .section-create-form { flex-direction: column; }
   .calendar-card { padding: 0.8rem; }
-  .calendar-cell { min-height: 3.6rem; padding: 0.25rem; }
+  .calendar-grid { --cal-pad: 0.25rem; }
+  .calendar-cell { min-height: 3.6rem; }
   .calendar-pill-text { display: none; }
   .calendar-pill { justify-content: center; padding: 0.15rem; }
   .calendar-month-label { min-width: 0; font-size: 0.875rem; }

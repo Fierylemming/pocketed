@@ -179,4 +179,31 @@ describe("imported reminders sync like any other", () => {
     const bad = await a.call("/v1/push", { ops: [{ ...op, id: "op-2", alertBefore: -1 }] });
     expect(bad.status).toBe(400);
   });
+
+  it("keeps a multi-day event's end and all-day flag through push and pull", async () => {
+    const a = await app();
+    const op: Op = {
+      id: "op-span",
+      kind: "upsert",
+      noteId: "gcal-trip",
+      text: "Trip",
+      itemKind: "reminder",
+      title: "Trip",
+      reminderAt: 5_000_000,
+      endAt: 5_000_000 + 3 * 86_400_000,
+      allDay: true,
+      source: "gcal",
+      sourceRef: "5000000:0123456789abcdef",
+      updatedAt: 2,
+    };
+    expect((await a.call("/v1/push", { ops: [op] })).status).toBe(200);
+    const pulled = (await a.call("/v1/pull?cursor=0")).body.ops as Op[];
+    expect(pulled[0]).toMatchObject({ endAt: op.endAt, allDay: true });
+    expect((await a.store.allNotes())[0]).toMatchObject({ endAt: op.endAt, allDay: true });
+
+    for (const bad of [{ endAt: -5 }, { endAt: 1.5 }, { allDay: "yes" }]) {
+      const r = await a.call("/v1/push", { ops: [{ ...op, id: "op-bad-" + Math.random(), ...bad }] });
+      expect(r.status).toBe(400);
+    }
+  });
 });

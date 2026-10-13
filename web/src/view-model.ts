@@ -2,6 +2,7 @@ import {
   effectiveReminderColor,
   formatLeadTime,
   formatReminderLabel,
+  formatSpanLabel,
   getReminderColor,
   GOOGLE_COLORS,
   isReminderItem,
@@ -247,5 +248,8 @@ export function reminderMeta(note: Note, now: number): string | null {
     typeof note.alertBefore === "number" && note.alertBefore > 0
       ? ` · 🔔 ${formatLeadTime(note.alertBefore)} before`
       : "";
-  return "⏰ " + formatReminderLabel(note.reminderAt, now) + (rep ? ` · 🔁 ${rep}` : "") + early;
+  // Events running across several days show their whole range.
+  const span = formatSpanLabel(note, now);
+  const when = span ? "📅 " + span : "⏰ " + formatReminderLabel(note.reminderAt, now);
+  return when + (rep ? ` · 🔁 ${rep}` : "") + early;
 }

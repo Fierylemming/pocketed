@@ -54,6 +54,8 @@ interface StoredMeta {
   parentId?: string | null;
   repeat?: RepeatId | null;
   alertBefore?: number | null;
+  endAt?: number | null;
+  allDay?: boolean | null;
   source?: ItemSource | null;
   sourceRef?: string | null;
 }
@@ -73,6 +75,8 @@ function encodeMeta(op: Op): string | null {
   if (op.parentId !== undefined) m.parentId = op.parentId;
   if (op.repeat !== undefined) m.repeat = op.repeat;
   if (op.alertBefore !== undefined) m.alertBefore = op.alertBefore;
+  if (op.endAt !== undefined) m.endAt = op.endAt;
+  if (op.allDay !== undefined) m.allDay = op.allDay;
   if (op.source !== undefined) m.source = op.source;
   if (op.sourceRef !== undefined) m.sourceRef = op.sourceRef;
   return Object.keys(m).length > 0 ? JSON.stringify(m) : null;
@@ -191,6 +195,8 @@ function rowToNote(r: NoteRow): Note {
     reminderAt,
     repeat: reminderAt == null ? null : (m.repeat ?? "none"),
     alertBefore: m.alertBefore ?? null,
+    endAt: reminderAt == null ? null : (m.endAt ?? null),
+    allDay: m.allDay ?? null,
     source: m.source ?? null,
     sourceRef: m.sourceRef ?? null,
     deleted: (r.deleted as number) === 1,
@@ -574,6 +580,13 @@ export class MemoryStore implements Store {
             : (op.repeat !== undefined ? op.repeat : (cur?.repeat ?? "none")),
         alertBefore:
           op.alertBefore !== undefined ? op.alertBefore : (cur?.alertBefore ?? null),
+        endAt:
+          op.reminderAt == null
+            ? null
+            : op.endAt !== undefined
+              ? op.endAt
+              : (cur?.endAt ?? null),
+        allDay: op.allDay !== undefined ? op.allDay : (cur?.allDay ?? null),
         source: op.source !== undefined ? op.source : (cur?.source ?? null),
         sourceRef: op.sourceRef !== undefined ? op.sourceRef : (cur?.sourceRef ?? null),
         deleted: false,

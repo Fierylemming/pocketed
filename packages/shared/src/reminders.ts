@@ -174,6 +174,135 @@ export function filterRemindersByColor(
     .sort((a, b) => (a.reminderAt as number) - (b.reminderAt as number));
 }
 
+// ---- Events that last a while (multi-day calendar events) ----
+
+/** The reminder's end (exclusive), when its event lasts beyond its start; else null. */
+export function reminderEnd(note: Note): number | null {
+  if (typeof note.reminderAt !== "number" || typeof note.endAt !== "number") return null;
+  return note.endAt > note.reminderAt ? note.endAt : null;
+}
+
+/** Local calendar days from the day of `start` to the day of `end`, inclusive (DST-safe). */
+function daysBetween(start: number, end: number): number {
+  const a = new Date(start);
+  const b = new Date(end);
+  return Math.round(
+    (Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) -
+      Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) /
+      86_400_000,
+  );
+}
+
+/**
+ * How many calendar days an event from `start` to `end` (exclusive) touches:
+ * 1 for anything that starts and ends on the same day. An event ending exactly
+ * at midnight doesn't count the day it ends on.
+ */
+export function spanDayCount(start: number, end: number | null): number {
+  if (end == null || end <= start) return 1;
+  return daysBetween(start, end - 1) + 1;
+}
+
+/** True when the reminder's event runs across more than one calendar day. */
+export function isMultiDay(note: Note): boolean {
+  const end = reminderEnd(note);
+  return end != null && spanDayCount(note.reminderAt as number, end) > 1;
+}
+
+export interface ReminderSpan {
+  start: number;
+  /** Exclusive; null for a reminder that is a moment in time. */
+  end: number | null;
+}
+
+/**
+ * Every occurrence of a reminder that is *on* at some point in [from, to):
+ * like occurrencesBetween, but an occurrence that started before `from` and
+ * is still running counts too. Each repeat lasts as long as the first.
+ */
+export function occurrenceSpansBetween(
+  note: Note,
+  from: number,
+  to: number,
+  cap = 500,
+): ReminderSpan[] {
+  if (typeof note.reminderAt !== "number") return [];
+  const end0 = reminderEnd(note);
+  const length = end0 == null ? 0 : end0 - note.reminderAt;
+  const out: ReminderSpan[] = [];
+  let at: number = note.reminderAt;
+  const repeat = note.repeat ?? "none";
+  for (let i = 0; i < MAX_STEPS && at < to && out.length < cap; i++) {
+    if (at >= from || (length > 0 && at + length > from)) {
+      out.push({ start: at, end: length > 0 ? at + length : null });
+    }
+    if (repeat === "none") break;
+    const step = stepRepeat(at, repeat);
+    if (step <= at) break;
+    at = step;
+  }
+  return out;
+}
+
+/** Whether the reminder is on at some point during the local day `dateKey` ("YYYY-MM-DD"). */
+export function reminderCoversDay(note: Note, dateKey: string): boolean {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const from = new Date(y!, m! - 1, d!).getTime();
+  const to = new Date(y!, m! - 1, d! + 1).getTime();
+  return occurrenceSpansBetween(note, from, to, 1).length > 0;
+}
+
+/** "Mon 12 Oct" */
+function shortDate(ts: number): string {
+  const d = new Date(ts);
+  return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
+}
+
+function hhmm(ts: number): string {
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Label for an event running across several days, e.g.
+ * "Mon 12 Oct – Fri 16 Oct · 5 days" (all-day) or
+ * "Fri 16 Oct 22:00 – Sat 17 Oct 02:00", plus "day 3 of 5" while it's on.
+ * Null when the reminder isn't a multi-day event.
+ */
+export function formatSpanLabel(note: Note, now: number): string | null {
+  const start = note.reminderAt;
+  const end = reminderEnd(note);
+  if (start == null || end == null) return null;
+  const days = spanDayCount(start, end);
+  if (days < 2) return null;
+  const range = note.allDay
+    ? `${shortDate(start)} – ${shortDate(end - 1)} · ${days} days`
+    : `${shortDate(start)} ${hhmm(start)} – ${shortDate(end)} ${hhmm(end)}`;
+  if (now >= start && now < end) {
+    const day = Math.min(days, daysBetween(start, now) + 1);
+    return `${range} · now, day ${day} of ${days}`;
+  }
+  return range;
+}
+
+export interface CalendarEntry {
+  /** The reminder; for a repeat, a copy carrying this occurrence's times. */
+  note: Note;
+  start: number;
+  /** Exclusive; null for a moment in time. */
+  end: number | null;
+  /** Runs across more than one calendar day. */
+  multiDay: boolean;
+  /** Which day of the event this cell shows (0 = first), and how many days it has. */
+  dayIndex: number;
+  dayCount: number;
+  /** The event carries on from the day before / into the next day. */
+  continuesBefore: boolean;
+  continuesAfter: boolean;
+}
+
 export interface CalendarDay {
   dateKey: string;
   year: number;
@@ -181,12 +310,21 @@ export interface CalendarDay {
   day: number;
   isCurrentMonth: boolean;
   isToday: boolean;
+  /** Everything on this day (multi-day events on each day they cover), in time order. */
   reminders: Note[];
+  entries: CalendarEntry[];
+  /**
+   * The same entries laid out in rows ("lanes") for drawing: a multi-day event
+   * keeps one lane across its days within a week, so it can be drawn as one
+   * continuous bar. Null = an empty lane kept so the lanes below line up.
+   */
+  slots: (CalendarEntry | null)[];
 }
 
 /**
  * Builds a 42-cell (6-week, Sun-Sat) calendar grid for the given year & month (0-indexed),
- * populated with active reminders (optionally filtered by colour).
+ * populated with active reminders (optionally filtered by colour). Events
+ * that run across several days appear on every day they cover.
  */
 export function buildCalendarMonth(
   year: number,
@@ -199,29 +337,109 @@ export function buildCalendarMonth(
   const todayKey = localDateKey(now);
   const firstOfMonth = new Date(year, month, 1);
   const startOffset = firstOfMonth.getDay(); // 0 (Sun) .. 6 (Sat)
-  const gridStart = new Date(year, month, 1 - startOffset);
-  const gridEnd = new Date(year, month, 1 - startOffset + 42);
-
-  // Repeating reminders appear on every day they fall due in this grid.
-  // Each occurrence is a copy of the note with its own reminderAt.
-  const byDay = new Map<string, Note[]>();
-  for (const r of filtered) {
-    for (const at of occurrencesBetween(r, gridStart.getTime(), gridEnd.getTime())) {
-      const key = localDateKey(at);
-      const list = byDay.get(key) ?? [];
-      list.push(at === r.reminderAt ? r : { ...r, reminderAt: at });
-      byDay.set(key, list);
+  const dayStarts: number[] = [];
+  for (let i = 0; i <= 42; i++) {
+    dayStarts.push(new Date(year, month, 1 - startOffset + i).getTime());
+  }
+  const gridFrom = dayStarts[0]!;
+  const gridTo = dayStarts[42]!;
+  const indexOfDay = (ts: number) => {
+    // Last cell whose midnight is at or before ts.
+    let lo = 0;
+    let hi = 41;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (dayStarts[mid]! <= ts) lo = mid;
+      else hi = mid - 1;
     }
+    return lo;
+  };
+
+  // Each occurrence is placed on every cell it covers. Repeating reminders
+  // appear on every day they fall due in this grid.
+  const entries: CalendarEntry[][] = Array.from({ length: 42 }, () => []);
+  const multi: Array<{ first: number; last: number; cells: CalendarEntry[] }> = [];
+  for (const r of filtered) {
+    for (const span of occurrenceSpansBetween(r, gridFrom, gridTo)) {
+      const dayCount = spanDayCount(span.start, span.end);
+      const note =
+        span.start === r.reminderAt
+          ? r
+          : { ...r, reminderAt: span.start, endAt: span.end ?? r.endAt ?? null };
+      const firstCell = span.start < gridFrom ? 0 : indexOfDay(span.start);
+      const lastTs = span.end == null ? span.start : span.end - 1;
+      const lastCell = lastTs >= gridTo ? 41 : indexOfDay(lastTs);
+      // Day of the event shown in the first visible cell.
+      const offset = span.start < gridFrom ? daysBetween(span.start, gridFrom) : 0;
+      const cells: CalendarEntry[] = [];
+      for (let c = firstCell; c <= lastCell; c++) {
+        const dayIndex = offset + (c - firstCell);
+        const entry: CalendarEntry = {
+          note,
+          start: span.start,
+          end: span.end,
+          multiDay: dayCount > 1,
+          dayIndex,
+          dayCount,
+          continuesBefore: dayIndex > 0,
+          continuesAfter: dayIndex < dayCount - 1,
+        };
+        entries[c]!.push(entry);
+        cells.push(entry);
+      }
+      if (dayCount > 1) multi.push({ first: firstCell, last: lastCell, cells });
+    }
+  }
+
+  // Lanes, one week row at a time: multi-day events first (earliest, then
+  // longest), each in the lowest lane free on all its days; then the day's
+  // other reminders fill the gaps in time order.
+  const slots: (CalendarEntry | null)[][] = Array.from({ length: 42 }, () => []);
+  for (let w = 0; w < 6; w++) {
+    const lo = w * 7;
+    const hi = lo + 6;
+    const inWeek = multi
+      .filter((m) => m.first <= hi && m.last >= lo)
+      .map((m) => ({ ...m, a: Math.max(m.first, lo), b: Math.min(m.last, hi) }))
+      .sort(
+        (x, y) =>
+          x.a - y.a ||
+          y.b - y.a - (x.b - x.a) ||
+          x.cells[0]!.start - y.cells[0]!.start ||
+          x.cells[0]!.note.id.localeCompare(y.cells[0]!.note.id),
+      );
+    for (const m of inWeek) {
+      let lane = 0;
+      while (true) {
+        let free = true;
+        for (let c = m.a; c <= m.b && free; c++) if (slots[c]![lane]) free = false;
+        if (free) break;
+        lane++;
+      }
+      for (let c = m.a; c <= m.b; c++) {
+        const row = slots[c]!;
+        while (row.length < lane) row.push(null);
+        row[lane] = m.cells[c - m.first]!;
+      }
+    }
+  }
+  for (let c = 0; c < 42; c++) {
+    const row = slots[c]!;
+    const singles = entries[c]!.filter((e) => !e.multiDay).sort((x, y) => x.start - y.start);
+    let lane = 0;
+    for (const e of singles) {
+      while (row[lane]) lane++;
+      row[lane] = e;
+    }
+    for (let i = 0; i < row.length; i++) if (row[i] === undefined) row[i] = null;
   }
 
   const days: CalendarDay[] = [];
   for (let i = 0; i < 42; i++) {
-    const d = new Date(
-      gridStart.getFullYear(),
-      gridStart.getMonth(),
-      gridStart.getDate() + i,
-    );
+    const d = new Date(dayStarts[i]!);
     const dateKey = localDateKey(d.getTime());
+    // Stable sort: reminders at the same time keep their usual order.
+    const list = [...entries[i]!].sort((x, y) => x.start - y.start);
     days.push({
       dateKey,
       year: d.getFullYear(),
@@ -229,7 +447,9 @@ export function buildCalendarMonth(
       day: d.getDate(),
       isCurrentMonth: d.getMonth() === month && d.getFullYear() === year,
       isToday: dateKey === todayKey,
-      reminders: byDay.get(dateKey) ?? [],
+      reminders: list.map((e) => e.note),
+      entries: list,
+      slots: slots[i]!,
     });
   }
   return days;
