@@ -63,13 +63,64 @@ import {
   userSectionsFor,
 } from "../view-model";
 import { hasGoogleReturn } from "../google-return";
+import { taskProgress, toggleTaskLine, toPlainText } from "../markdown";
+import { textStats } from "../text-edit";
 import { ColorPicker } from "./ColorPicker";
+import { MarkdownView } from "./MarkdownView";
+import { RichTextEditor } from "./RichTextEditor";
 import { ReminderCalendar } from "./ReminderCalendar";
 import { ReminderPicker, type ReminderValue } from "./ReminderPicker";
 import { Settings } from "./Settings";
 
 const DISMISS_INSTALL_KEY = "pocketed.v2.installDismissed";
 const EXPANDED_SECTIONS_KEY = "pocketed.v2.expandedSections";
+/** Unsaved new note, kept on this device so a reload or section switch doesn't lose it. */
+const NOTE_DRAFT_KEY = "pocketed.v2.noteDraft";
+
+interface NoteDraft {
+  title: string;
+  body: string;
+  checklist: ChecklistItem[];
+  pinned: boolean;
+}
+
+function loadNoteDraft(): NoteDraft | null {
+  try {
+    const raw = localStorage.getItem(NOTE_DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as Partial<NoteDraft>;
+    return {
+      title: typeof d.title === "string" ? d.title : "",
+      body: typeof d.body === "string" ? d.body : "",
+      checklist: Array.isArray(d.checklist)
+        ? d.checklist.filter(
+            (c): c is ChecklistItem =>
+              !!c && typeof c.id === "string" && typeof c.text === "string",
+          )
+        : [],
+      pinned: d.pinned === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveNoteDraft(d: NoteDraft) {
+  try {
+    if (!d.title.trim() && !d.body.trim() && d.checklist.length === 0) {
+      localStorage.removeItem(NOTE_DRAFT_KEY);
+    } else {
+      localStorage.setItem(NOTE_DRAFT_KEY, JSON.stringify(d));
+    }
+  } catch {
+    /* storage full or unavailable: the draft just isn't kept */
+  }
+}
+
+function safeFileName(title: string): string {
+  const base = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").trim().slice(0, 80);
+  return (base || "note") + ".md";
+}
 
 function loadExpandedSections(): Set<string> {
   try {
@@ -327,6 +378,7 @@ export function Notes({
         onEdit={() => setEditing(note.id)}
         onExpand={() => setExpandedNoteId(note.id)}
         onViewImage={(img) => setLightboxImage(img)}
+        highlight={searching ? query : undefined}
       />
     );
   }
@@ -1158,16 +1210,42 @@ function NoteComposer({
   sections: Section[];
   manager: SyncManager;
 }) {
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
+  const [draft] = useState(loadNoteDraft);
+  const [title, setTitle] = useState(draft?.title ?? "");
+  const [body, setBody] = useState(draft?.body ?? "");
   const [sectionId, setSectionId] = useState<string | null>(defaultSectionId);
   const [images, setImages] = useState<string[]>([]);
-  const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
+  const [checklist, setChecklist] = useState<ChecklistItem[]>(draft?.checklist ?? []);
   const [newTaskText, setNewTaskText] = useState("");
-  const [showChecklistBuilder, setShowChecklistBuilder] = useState(false);
-  const [pinned, setPinned] = useState(false);
+  const [showChecklistBuilder, setShowChecklistBuilder] = useState(
+    (draft?.checklist.length ?? 0) > 0,
+  );
+  const [pinned, setPinned] = useState(draft?.pinned ?? false);
   const [imgErr, setImgErr] = useState<string | null>(null);
+  const [draftSavedAt, setDraftSavedAt] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Keep the unsaved note on this device as it's written.
+  const hasDraft = title.trim() !== "" || body.trim() !== "" || checklist.length > 0;
+  useEffect(() => {
+    const t = setTimeout(() => {
+      saveNoteDraft({ title, body, checklist, pinned });
+      setDraftSavedAt(hasDraft ? Date.now() : null);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [title, body, checklist, pinned, hasDraft]);
+
+  function discardDraft() {
+    if (!confirm("Discard this unsaved note?")) return;
+    setTitle("");
+    setBody("");
+    setChecklist([]);
+    setImages([]);
+    setPinned(false);
+    setNewTaskText("");
+    saveNoteDraft({ title: "", body: "", checklist: [], pinned: false });
+    setDraftSavedAt(null);
+  }
 
   async function handleFiles(e: ChangeEvent<HTMLInputElement>) {
     setImgErr(null);
@@ -1199,7 +1277,13 @@ function NoteComposer({
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    const finalTitle = title.trim() || body.split("\n")[0]?.trim() || "";
+    save();
+  }
+
+  function save() {
+    // Without a title, the first line becomes one (minus any formatting marks).
+    const firstLine = toPlainText(body.split("\n").find((l) => l.trim()) ?? "");
+    const finalTitle = (title.trim() || firstLine.trim()).slice(0, LIMITS.noteTitleChars);
     if (!finalTitle && !body.trim() && images.length === 0) return;
     manager.mutate(
       (s) =>
@@ -1223,6 +1307,8 @@ function NoteComposer({
     setNewTaskText("");
     setPinned(false);
     setImgErr(null);
+    saveNoteDraft({ title: "", body: "", checklist: [], pinned: false });
+    setDraftSavedAt(null);
   }
 
   const canSubmit =
@@ -1253,13 +1339,17 @@ function NoteComposer({
         aria-label="Note title"
       />
 
-      <textarea
+      <RichTextEditor
         value={body}
-        onChange={(e) => setBody(e.target.value)}
-        placeholder="Write your note here (supports large detailed notes, checklists, and images)…"
-        rows={5}
+        onChange={setBody}
+        placeholder="Write your note… Use the toolbar or type **bold**, # Heading, - list, - [ ] task"
+        minRows={5}
         maxLength={LIMITS.noteBodyChars}
-        aria-label="Note body"
+        ariaLabel="Note body"
+        focusTitle={title}
+        onSubmitShortcut={() => {
+          if (canSubmit) save();
+        }}
       />
 
       {/* Uploaded image previews */}
@@ -1380,9 +1470,19 @@ function NoteComposer({
           </button>
         </div>
 
-        <button className="primary" type="submit" disabled={!canSubmit}>
-          Add Note
-        </button>
+        <div className="composer-submit">
+          {draftSavedAt != null && (
+            <span className="muted small draft-status" title="Unsaved notes are kept on this device until you add or discard them">
+              💾 Draft kept on this device ·{" "}
+              <button type="button" className="linklike inline-link" onClick={discardDraft}>
+                Discard
+              </button>
+            </span>
+          )}
+          <button className="primary" type="submit" disabled={!canSubmit} title="Add note (Ctrl+Enter)">
+            Add Note
+          </button>
+        </div>
       </div>
     </form>
   );
@@ -1728,6 +1828,7 @@ function LargeNoteCard({
   onEdit,
   onExpand,
   onViewImage,
+  highlight,
 }: {
   note: Note;
   now: number;
@@ -1737,9 +1838,11 @@ function LargeNoteCard({
   onEdit: () => void;
   onExpand: () => void;
   onViewImage: (src: string) => void;
+  highlight?: string;
 }) {
   const title = itemTitle(note);
   const body = itemBody(note);
+  const bodyTasks = taskProgress(body);
   const images = note.images ?? [];
   const checklist = note.checklist ?? [];
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1850,7 +1953,18 @@ function LargeNoteCard({
         {title}
       </h3>
 
-      {body && <div className="large-note-body">{body}</div>}
+      {body && (
+        <MarkdownView
+          source={body}
+          className="large-note-body"
+          highlight={highlight}
+          onToggleTask={(line) =>
+            manager.mutate((s) =>
+              updateItem(s, note.id, { body: toggleTaskLine(body, line) }, Date.now()),
+            )
+          }
+        />
+      )}
 
       {/* Interactive Checklist on Note Card */}
       {checklist.length > 0 && (
@@ -1912,7 +2026,14 @@ function LargeNoteCard({
       )}
 
       <div className="large-note-footer">
-        <span className="meta">{shortAgo(note.updatedAt, now)}</span>
+        <span className="meta">
+          {shortAgo(note.updatedAt, now)}
+          {bodyTasks.total > 0 && (
+            <span className="task-progress" title="Tasks ticked in this note">
+              {" "}· ☑ {bodyTasks.done}/{bodyTasks.total}
+            </span>
+          )}
+        </span>
         <div className="note-interact-bar">
           <input
             ref={fileInputRef}
@@ -1971,7 +2092,8 @@ function NoteDetailModal({
   const images = note.images ?? [];
   const checklist = note.checklist ?? [];
   const [newTask, setNewTask] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"md" | "plain" | null>(null);
+  const bodyTasks = taskProgress(body);
 
   function toggleTask(id: string) {
     const next = checklist.map((c) =>
@@ -1993,21 +2115,40 @@ function NoteDetailModal({
     setNewTask("");
   }
 
-  async function copyContent() {
+  async function copyContent(kind: "md" | "plain") {
+    const text =
+      kind === "md" ? `# ${title}\n\n${body}` : `${title}\n\n${toPlainText(body)}`;
     try {
-      await navigator.clipboard?.writeText(
-        `${title}\n\n${body}`.trim(),
-      );
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard?.writeText(text.trim());
+      setCopied(kind);
+      setTimeout(() => setCopied(null), 2000);
     } catch {
       /* ignore */
     }
   }
 
-  const wordCount = body.trim()
-    ? body.trim().split(/\s+/).length
-    : 0;
+  function downloadNote() {
+    const tasks = checklist.length
+      ? "\n\n" + checklist.map((c) => `- [${c.done ? "x" : " "}] ${c.text}`).join("\n")
+      : "";
+    const text = `# ${title}\n\n${body.trim()}${tasks}\n`;
+    const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = safeFileName(title);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function toggleBodyTask(line: number) {
+    manager.mutate((s) =>
+      updateItem(s, note.id, { body: toggleTaskLine(body, line) }, Date.now()),
+    );
+  }
+
+  const stats = textStats(body);
 
   return (
     <div className="overlay" onClick={onClose} role="dialog" aria-label={title}>
@@ -2022,12 +2163,36 @@ function NoteDetailModal({
             )}
             <h2>{title}</h2>
             <p className="muted small">
-              Updated {shortAgo(note.updatedAt, now)} · {wordCount} words
+              Updated {shortAgo(note.updatedAt, now)} · {stats.words}{" "}
+              {stats.words === 1 ? "word" : "words"}
+              {stats.readingMinutes ? ` · ${stats.readingMinutes} min read` : ""}
+              {bodyTasks.total > 0 ? ` · ☑ ${bodyTasks.done}/${bodyTasks.total} tasks` : ""}
             </p>
           </div>
           <div className="row">
-            <button type="button" className="small-btn" onClick={copyContent}>
-              {copied ? "✓ Copied" : "📋 Copy"}
+            <button
+              type="button"
+              className="small-btn"
+              onClick={() => void copyContent("plain")}
+              title="Copy the note as plain text, without formatting marks"
+            >
+              {copied === "plain" ? "✓ Copied" : "📋 Copy text"}
+            </button>
+            <button
+              type="button"
+              className="small-btn"
+              onClick={() => void copyContent("md")}
+              title="Copy the note with its Markdown formatting"
+            >
+              {copied === "md" ? "✓ Copied" : "Ⓜ️ Copy Markdown"}
+            </button>
+            <button
+              type="button"
+              className="small-btn"
+              onClick={downloadNote}
+              title="Download this note as a Markdown (.md) file"
+            >
+              ⬇️ Download
             </button>
             <button type="button" className="small-btn primary" onClick={onEdit}>
               ✏️ Edit
@@ -2035,7 +2200,13 @@ function NoteDetailModal({
           </div>
         </div>
 
-        {body && <div className="note-detail-body">{body}</div>}
+        {body && (
+          <MarkdownView
+            source={body}
+            className="note-detail-body"
+            onToggleTask={toggleBodyTask}
+          />
+        )}
 
         {images.length > 0 && (
           <div className="note-detail-images">
@@ -2128,6 +2299,17 @@ function EditItemRow({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const saveable = title.trim().length > 0 && (!isRem || !rem.error);
+  const initialBody = useRef(itemBody(note));
+  const initialTitle = useRef(itemTitle(note));
+
+  function cancel() {
+    const changed =
+      body !== initialBody.current ||
+      title !== initialTitle.current ||
+      images.length !== (note.images ?? []).length;
+    if (changed && !confirm("Discard your changes to this note?")) return;
+    done();
+  }
 
   async function handleFiles(e: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -2188,13 +2370,26 @@ function EditItemRow({
         aria-label="Edit title"
       />
 
-      <textarea
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        rows={isRem ? 2 : 5}
-        placeholder={isRem ? "Short body…" : "Large note body…"}
-        aria-label="Edit body"
-      />
+      {isRem ? (
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={2}
+          placeholder="Short body…"
+          aria-label="Edit body"
+        />
+      ) : (
+        <RichTextEditor
+          value={body}
+          onChange={setBody}
+          minRows={6}
+          maxLength={LIMITS.noteBodyChars}
+          placeholder="Note body…"
+          ariaLabel="Edit body"
+          focusTitle={title}
+          onSubmitShortcut={save}
+        />
+      )}
 
       {isRem ? (
         <>
@@ -2251,10 +2446,10 @@ function EditItemRow({
       )}
 
       <div className="row">
-        <button className="primary" disabled={!saveable} onClick={save}>
+        <button className="primary" disabled={!saveable} onClick={save} title="Save (Ctrl+Enter)">
           Save
         </button>
-        <button type="button" onClick={done}>
+        <button type="button" onClick={isRem ? done : cancel}>
           Cancel
         </button>
       </div>

@@ -30,7 +30,7 @@ import {
   type HexColor,
   type Note,
 } from "./protocol";
-import { deleteNote, putItem, type SyncState } from "./sync";
+import { deleteNote, putItem, updateItem, type SyncState } from "./sync";
 
 /** How far ahead events are imported. */
 export const CALENDAR_WINDOW_DAYS = 60;
@@ -105,6 +105,20 @@ function refStart(ref: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** The event's end as stored on its reminder: null when it has no length. */
+export function calendarEventEnd(ev: CalendarEvent): number | null {
+  return ev.end > ev.start ? ev.end : null;
+}
+
+/**
+ * Reminders imported before events' end times were kept have no all-day flag
+ * (null/missing). The next check fills both in once — just those two fields,
+ * so anything you changed on the reminder yourself stays as it is.
+ */
+function needsEventTimes(n: Note): boolean {
+  return !n.deleted && n.reminderAt != null && n.allDay == null;
+}
+
 /** Note fields for an event, keeping the user's own choices from `prev`. */
 export function calendarNoteFields(ev: CalendarEvent, prev: Note | null) {
   const title = truncate(ev.title || "(No title)", LIMITS.noteTitleChars);
@@ -116,6 +130,9 @@ export function calendarNoteFields(ev: CalendarEvent, prev: Note | null) {
     body,
     location: ev.location ? truncate(ev.location, LIMITS.locationChars) : null,
     reminderAt: ev.start,
+    // Kept so the calendar can show events that run across several days.
+    endAt: calendarEventEnd(ev),
+    allDay: ev.allDay,
     repeat: "none" as const,
     alertBefore: ev.allDay ? null : CALENDAR_ALERT_BEFORE_MINUTES,
     source: "gcal" as const,
@@ -174,7 +191,22 @@ export function reconcileCalendar(
     // away, not one you dismissed. (A sweep leaves the event's own details
     // untouched, so this is checked before "unchanged" below.)
     const sweptAway = prev.deleted && swept.has(prev.updatedAt);
-    if (prev.sourceRef === ref && !sweptAway) continue; // unchanged (live or dismissed)
+    if (prev.sourceRef === ref && !sweptAway) {
+      if (needsEventTimes(prev)) {
+        s = updateItem(
+          s,
+          id,
+          {
+            // A reminder you moved to another time keeps being a moment.
+            endAt: prev.reminderAt === ev.start ? calendarEventEnd(ev) : null,
+            allDay: ev.allDay,
+          },
+          now,
+        );
+        updated++;
+      }
+      continue; // unchanged (live or dismissed)
+    }
 
     const live = !prev.deleted && prev.reminderAt != null;
     if (!live) {

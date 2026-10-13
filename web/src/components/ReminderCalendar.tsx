@@ -3,16 +3,22 @@ import {
   buildCalendarMonth,
   DEFAULT_REMINDER_COLOR,
   filterRemindersByColor,
+  formatSpanLabel,
   getReminderColor,
   itemTitle,
   localDateKey,
   normalizeReminderColor,
+  reminderCoversDay,
   truncate,
+  type CalendarEntry,
   type Note,
   type ReminderColorId,
   type Section,
 } from "@pocketed/shared";
 import { colorsInUse, reminderColorCounts } from "../view-model";
+
+/** Rows of reminders shown inside a day cell before "+N more". */
+const MAX_SLOTS = 3;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = [
@@ -77,9 +83,7 @@ export function ReminderCalendar({
   const selectedDayObj = calendarDays.find((d) => d.dateKey === selectedDateKey);
   const dayReminders = selectedDayObj
     ? selectedDayObj.reminders
-    : filteredReminders.filter(
-        (r) => r.reminderAt != null && localDateKey(r.reminderAt) === selectedDateKey,
-      );
+    : filteredReminders.filter((r) => reminderCoversDay(r, selectedDateKey));
 
   const sectionMap = new Map(sections.map((s) => [s.id, s]));
 
@@ -127,7 +131,8 @@ export function ReminderCalendar({
         <div>
           <h2 className="calendar-heading">📅 Reminders Calendar</h2>
           <p className="muted small calendar-sub">
-            Click a colour to filter reminders, or select a date to view and schedule.
+            Click a colour to filter reminders, or select a date to view and schedule. Events that
+            run across several days show as one bar.
           </p>
         </div>
         <div className="calendar-nav">
@@ -203,8 +208,12 @@ export function ReminderCalendar({
             {w}
           </div>
         ))}
-        {calendarDays.map((cell) => {
+        {calendarDays.map((cell, index) => {
           const isSelected = cell.dateKey === selectedDateKey;
+          const column = index % 7;
+          const shown = cell.slots.slice(0, MAX_SLOTS);
+          const hidden = cell.entries.length - shown.filter(Boolean).length;
+          const multiDay = cell.entries.filter((e) => e.multiDay).length;
           return (
             <button
               key={cell.dateKey}
@@ -214,41 +223,34 @@ export function ReminderCalendar({
                 (cell.isCurrentMonth ? "" : " outside-month") +
                 (cell.isToday ? " is-today" : "") +
                 (isSelected ? " is-selected" : "") +
-                (cell.reminders.length > 0 ? " has-reminders" : "")
+                (cell.entries.length > 0 ? " has-reminders" : "")
               }
               onClick={() => {
                 setSelectedDateKey(cell.dateKey);
                 setListMode("day");
               }}
-              aria-label={`${cell.dateKey}, ${cell.reminders.length} reminders`}
+              aria-label={`${cell.dateKey}, ${cell.entries.length} reminders${multiDay ? `, ${multiDay} running across several days` : ""}`}
             >
               <div className="calendar-day-num">{cell.day}</div>
               <div className="calendar-cell-items">
-                {cell.reminders.slice(0, 2).map((rem) => {
-                  const col = getReminderColor(rem.color);
-                  return (
-                    <div
-                      key={rem.id}
-                      className="calendar-pill"
-                      style={{
-                        backgroundColor: col.bg,
-                        borderLeft: `3px solid ${col.hex}`,
-                      }}
-                      title={`${itemTitle(rem)}${rem.location ? ` · 📍 ${rem.location}` : ""}`}
-                    >
-                      <span
-                        className="calendar-pill-dot"
-                        style={{ backgroundColor: col.hex }}
-                      />
-                      <span className="calendar-pill-text">
-                        {truncate(itemTitle(rem), 14)}
-                      </span>
+                {shown.map((entry, lane) =>
+                  entry ? (
+                    <CalendarPill
+                      key={`${entry.note.id}-${entry.start}`}
+                      entry={entry}
+                      column={column}
+                      now={now}
+                    />
+                  ) : (
+                    <div key={`gap-${lane}`} className="calendar-pill calendar-pill-spacer" aria-hidden="true">
+                      <span className="calendar-pill-dot" />
+                      <span className="calendar-pill-text">{"\u00a0"}</span>
                     </div>
-                  );
-                })}
-                {cell.reminders.length > 2 && (
+                  ),
+                )}
+                {hidden > 0 && (
                   <div className="calendar-more">
-                    +{cell.reminders.length - 2} more
+                    +{hidden} more
                   </div>
                 )}
               </div>
@@ -308,5 +310,66 @@ export function ReminderCalendar({
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * One reminder inside a day cell. An event running across several days is
+ * drawn as a segment per day that joins up with its neighbours into one bar
+ * (its title on the first day, and again where a new week row starts).
+ */
+function CalendarPill({
+  entry,
+  column,
+  now,
+}: {
+  entry: CalendarEntry;
+  column: number;
+  now: number;
+}) {
+  const rem = entry.note;
+  const col = getReminderColor(rem.color);
+  const title = itemTitle(rem);
+  const where = rem.location ? ` · 📍 ${rem.location}` : "";
+
+  if (!entry.multiDay) {
+    return (
+      <div
+        className="calendar-pill"
+        style={{ backgroundColor: col.bg, borderLeft: `3px solid ${col.hex}` }}
+        title={`${title}${where}`}
+      >
+        <span className="calendar-pill-dot" style={{ backgroundColor: col.hex }} />
+        <span className="calendar-pill-text">{truncate(title, 14)}</span>
+      </div>
+    );
+  }
+
+  // Joins only within a week row: at the row's edges the bar is cut square.
+  const joinLeft = entry.continuesBefore && column !== 0;
+  const joinRight = entry.continuesAfter && column !== 6;
+  const showLabel = !entry.continuesBefore || column === 0;
+  const span = formatSpanLabel(rem, now);
+  return (
+    <div
+      className={
+        "calendar-pill span" +
+        (entry.continuesBefore ? " cont-before" : "") +
+        (entry.continuesAfter ? " cont-after" : "") +
+        (joinLeft ? " join-left" : "") +
+        (joinRight ? " join-right" : "")
+      }
+      style={{
+        backgroundColor: col.bg,
+        borderLeft: entry.continuesBefore ? undefined : `3px solid ${col.hex}`,
+      }}
+      title={`${title}${span ? ` · ${span}` : ""}${where} · day ${entry.dayIndex + 1} of ${entry.dayCount}`}
+    >
+      <span
+        className={"calendar-pill-dot" + (showLabel ? "" : " is-hidden")}
+        style={{ backgroundColor: col.hex }}
+      />
+      <span className="calendar-pill-text">{showLabel ? title : "\u00a0"}</span>
+    </div>
   );
 }

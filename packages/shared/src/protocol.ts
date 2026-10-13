@@ -242,6 +242,14 @@ export interface Note {
   repeat?: RepeatId | null;
   /** Extra early alert, in minutes before reminderAt (the main alert still fires at reminderAt). */
   alertBefore?: number | null;
+  /**
+   * When the reminder's event ends (epoch ms, exclusive), for events that last
+   * a while — e.g. a calendar event running across several days. Null or
+   * missing: the reminder is a moment in time.
+   */
+  endAt?: number | null;
+  /** An all-day event (its reminderAt is 9:00 on the first day; endAt is midnight after the last). */
+  allDay?: boolean | null;
   /** Set when the item was imported (e.g. from Google Calendar) rather than typed in. */
   source?: ItemSource | null;
   /** Importer bookkeeping: which version of the source event this was made from. */
@@ -272,6 +280,8 @@ export interface Op {
   reminderAt?: number | null;
   repeat?: RepeatId | null;
   alertBefore?: number | null;
+  endAt?: number | null;
+  allDay?: boolean | null;
   source?: ItemSource | null;
   sourceRef?: string | null;
   createdAt?: number;
@@ -384,6 +394,15 @@ export function validateOp(op: Op): string | null {
         op.alertBefore > LIMITS.alertBeforeMinutes)
     ) {
       return "op.alertBefore invalid";
+    }
+    if (
+      op.endAt != null &&
+      (typeof op.endAt !== "number" || !Number.isInteger(op.endAt) || op.endAt < 0)
+    ) {
+      return "op.endAt invalid";
+    }
+    if (op.allDay != null && typeof op.allDay !== "boolean") {
+      return "op.allDay invalid";
     }
     if (op.source != null && !isValidSource(op.source)) {
       return "op.source invalid";

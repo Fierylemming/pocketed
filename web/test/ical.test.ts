@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calendarNoteId } from "@pocketed/shared";
+import { calendarNoteId, emptyState, reconcileCalendar } from "@pocketed/shared";
 import {
   CalendarParseError,
   cleanDescription,
@@ -176,6 +176,55 @@ describe("parseCalendar", () => {
       start: Date.UTC(2026, 10, 3, 9, 0), // GMT in November
       end: Date.UTC(2026, 10, 4, 0, 0),
     });
+  });
+
+  it("keeps the whole length of events that run across several days", () => {
+    const out = parseCalendar(
+      feed(
+        // A holiday Mon 12 – Fri 16 Oct, all day.
+        ev([
+          "DTSTART;VALUE=DATE:20261012",
+          "DTEND;VALUE=DATE:20261017",
+          "UID:holiday@google.com",
+          "SUMMARY:Holiday",
+        ]),
+        // A conference that began before today and is still on.
+        ev([
+          "DTSTART;VALUE=DATE:20261008",
+          "DTEND;VALUE=DATE:20261012",
+          "UID:conf@google.com",
+          "SUMMARY:Conference",
+        ]),
+        // An overnight timed event.
+        ev([
+          "DTSTART;TZID=Europe/London:20261016T220000",
+          "DTEND;TZID=Europe/London:20261017T020000",
+          "UID:night@google.com",
+          "SUMMARY:Night shift",
+        ]),
+      ),
+      opts,
+    );
+    const by = Object.fromEntries(out.map((e) => [e.title, e]));
+    expect(by.Holiday).toMatchObject({
+      allDay: true,
+      start: Date.UTC(2026, 9, 12, 8, 0), // 9:00 BST
+      end: Date.UTC(2026, 9, 16, 23, 0), // midnight after Fri 16 (BST)
+    });
+    expect(by.Conference).toMatchObject({ end: Date.UTC(2026, 9, 11, 23, 0) });
+    expect(by["Night shift"]).toMatchObject({
+      allDay: false,
+      start: Date.UTC(2026, 9, 16, 21, 0),
+      end: Date.UTC(2026, 9, 17, 1, 0),
+    });
+
+    // Imported, the reminders keep their end, so the calendar can span them.
+    const { state } = reconcileCalendar(emptyState(), out, NOW);
+    const notes = Object.values(state.notes);
+    for (const e of out) {
+      const n = notes.find((x) => x.title === e.title)!;
+      expect(n).toMatchObject({ reminderAt: e.start, endAt: e.end, allDay: e.allDay });
+    }
   });
 
   it("expands weekly repeats across the clocks going back, with exdates, moves and cancellations", () => {

@@ -39,6 +39,8 @@ export interface ItemExtraFields {
   pinned?: boolean;
   repeat?: RepeatId | null;
   alertBefore?: number | null;
+  endAt?: number | null;
+  allDay?: boolean | null;
   source?: ItemSource | null;
   sourceRef?: string | null;
 }
@@ -113,6 +115,8 @@ export function addNote(
     reminderAt,
     repeat: reminderAt != null ? (extra?.repeat ?? "none") : null,
     alertBefore: extra?.alertBefore ?? null,
+    endAt: reminderAt != null ? (extra?.endAt ?? null) : null,
+    allDay: extra?.allDay ?? null,
     source: extra?.source ?? null,
     sourceRef: extra?.sourceRef ?? null,
     deleted: false,
@@ -134,6 +138,8 @@ export function addNote(
     reminderAt,
     repeat: note.repeat,
     alertBefore: note.alertBefore,
+    endAt: note.endAt ?? null,
+    allDay: note.allDay ?? null,
     source: note.source,
     sourceRef: note.sourceRef,
     createdAt: now,
@@ -210,6 +216,13 @@ export function editNote(
     checklist: extra?.checklist !== undefined ? extra.checklist : prev.checklist,
     pinned: extra?.pinned !== undefined ? extra.pinned : prev.pinned,
     alertBefore: extra?.alertBefore !== undefined ? extra.alertBefore : (prev.alertBefore ?? null),
+    endAt:
+      reminderAt == null
+        ? null
+        : extra?.endAt !== undefined
+          ? extra.endAt
+          : (prev.endAt ?? null),
+    allDay: extra?.allDay !== undefined ? extra.allDay : (prev.allDay ?? null),
     source: extra?.source !== undefined ? extra.source : (prev.source ?? null),
     sourceRef: extra?.sourceRef !== undefined ? extra.sourceRef : (prev.sourceRef ?? null),
     updatedAt: now,
@@ -231,6 +244,8 @@ export function editNote(
     reminderAt: note.reminderAt,
     repeat: note.repeat,
     alertBefore: note.alertBefore,
+    endAt: note.endAt ?? null,
+    allDay: note.allDay ?? null,
     source: note.source,
     sourceRef: note.sourceRef,
     createdAt: note.createdAt,
@@ -257,6 +272,14 @@ export function updateItem(
         : prev.text;
   const nextReminderAt =
     patch.reminderAt !== undefined ? patch.reminderAt : prev.reminderAt;
+  // Moving a reminder that lasts a while (e.g. to its next repeat) moves its
+  // end with it, so it keeps the same length.
+  const nextEndAt =
+    patch.endAt !== undefined
+      ? patch.endAt
+      : prev.endAt != null && prev.reminderAt != null && nextReminderAt != null
+        ? prev.endAt + (nextReminderAt - prev.reminderAt)
+        : null;
 
   return editNote(state, id, nextText, nextReminderAt, now, {
     kind: patch.kind ?? prev.kind,
@@ -270,6 +293,8 @@ export function updateItem(
     pinned: patch.pinned !== undefined ? patch.pinned : prev.pinned,
     repeat: patch.repeat !== undefined ? patch.repeat : prev.repeat,
     alertBefore: patch.alertBefore !== undefined ? patch.alertBefore : prev.alertBefore,
+    endAt: nextEndAt,
+    allDay: patch.allDay !== undefined ? patch.allDay : prev.allDay,
     source: patch.source !== undefined ? patch.source : prev.source,
     sourceRef: patch.sourceRef !== undefined ? patch.sourceRef : prev.sourceRef,
   });
@@ -300,6 +325,7 @@ export function putItem(
     ...fields,
     id,
     repeat: fields.reminderAt != null ? (fields.repeat ?? "none") : null,
+    endAt: fields.reminderAt != null ? (fields.endAt ?? null) : null,
     createdAt: fields.createdAt ?? now,
     updatedAt: now,
     deleted: false,
@@ -321,6 +347,8 @@ export function putItem(
     reminderAt: note.reminderAt,
     repeat: note.repeat,
     alertBefore: note.alertBefore ?? null,
+    endAt: note.endAt ?? null,
+    allDay: note.allDay ?? null,
     source: note.source ?? null,
     sourceRef: note.sourceRef ?? null,
     createdAt: note.createdAt,
@@ -534,6 +562,13 @@ export function applyRemote(state: SyncState, ops: Op[]): SyncState {
             : (op.repeat !== undefined ? op.repeat : (cur?.repeat ?? "none")),
         alertBefore:
           op.alertBefore !== undefined ? op.alertBefore : (cur?.alertBefore ?? null),
+        endAt:
+          op.reminderAt == null
+            ? null
+            : op.endAt !== undefined
+              ? op.endAt
+              : (cur?.endAt ?? null),
+        allDay: op.allDay !== undefined ? op.allDay : (cur?.allDay ?? null),
         source: op.source !== undefined ? op.source : (cur?.source ?? null),
         sourceRef: op.sourceRef !== undefined ? op.sourceRef : (cur?.sourceRef ?? null),
         deleted: false,
