@@ -25,6 +25,7 @@ packages/shared   sync engine, reminders, calendar import rules, auth (pure Type
 server            Cloudflare Worker + D1 store (+ Google Calendar: src/calendar.ts link, src/google.ts sign-in)
 web               the website / installable app (React + Vite -> Cloudflare Pages)
                   calendar parsing: src/ical.ts, src/calendar-import.ts
+                  note editor: src/components/RichTextEditor.tsx (+ src/text-edit.ts), formatting: src/markdown.ts
   web/public      manifest, service worker (sw.js), app icons, Cloudflare headers
 .github/workflows ci.yml (checks on branches/PRs) and deploy.yml (publishes on main)
 ```
@@ -60,13 +61,41 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 
 - **Sections (Folders)** — create named sections on the home screen and click any section title to open its dedicated folder view.
 - **Two Separate Creation Buttons** — choose between **📝 New Note** and **⏰ New Reminder**:
-  - **Notes** are large items with a title, large body, image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
+  - **Notes** are large items with a title, a large formatted body (see "Writing notes" below), image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
   - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour from Google Calendar's palette.
 - **Google Calendar import** — connect your calendar once and its events show up as reminders automatically
   (see below).
 - **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded
   in **Google Calendar's palette** (Tomato, Basil, Peacock, Avocado…), with one-click colour filtering. The filter
   lists the colours your reminders actually use, so it stays short.
+
+## Writing notes: the editor
+
+A note's body is written in a proper text editor, used both when creating and when editing a note:
+
+- **Formatting toolbar**: bold, italic, strikethrough, highlight, inline code, headings (H1–H3),
+  bulleted / numbered / tick-able task lists, indent and outdent, quotes, code blocks, links, divider
+  lines and an insert-date-and-time button. On phones the toolbar scrolls sideways.
+- **Undo / redo** (↶ ↷, or Ctrl/⌘+Z and Ctrl/⌘+Shift+Z). Quick typing is grouped into one step.
+- **Smart lists**: Enter continues a list (the next number, a fresh ☐). Enter on an empty item ends it.
+  Tab / Shift+Tab indent list items.
+- **Find & replace** (🔍 or Ctrl/⌘+F): matches are highlighted in the text, with match case,
+  whole words, replace and replace all.
+- **Preview** (👁) shows the note formatted, and you can tick its tasks there.
+- **Focus mode** (⛶) opens the editor full screen as a distraction-free page. Esc closes it.
+- **Status bar**: word and character count, reading time, and the cursor's line and column.
+- **Paste a link over selected words** and they become a link.
+- **Drafts**: a new note you haven't added yet is kept on this device. Reloading or switching sections won't
+  lose it, and **Discard** clears it.
+- **Ctrl/⌘+Enter** saves. Cancelling an edit with unsaved changes asks first.
+- **?** in the toolbar lists every shortcut and the formatting you can type yourself.
+
+Formatting is stored as plain Markdown-style text (`**bold**`, `# Heading`, `- [ ] task`, `==highlight==`),
+so it syncs like any other note and older notes look the same as before. Notes are shown formatted on their
+cards and in the full view. Task boxes written in the body can be ticked right there, and the card shows
+progress (☑ 2/5). Search results highlight the words you searched for. In the full view, **Copy text** copies
+the note without formatting marks, **Copy Markdown** copies it with them, and **Download** saves it as a `.md` file.
+Formatting is drawn safely: a note can't inject HTML or scripts, and only `http(s)` and `mailto` links work.
 
 ## Reminders: what to expect
 
