@@ -34,6 +34,9 @@ export default function App() {
     <Notes
       manager={manager}
       onNewCfg={(c) => {
+        // Stop pending sync/import writes before clearing or replacing login
+        // data, rather than waiting for the effect cleanup after the render.
+        manager.stop();
         if (c) saveCfg(c);
         else clearAll();
         setCfg(c);

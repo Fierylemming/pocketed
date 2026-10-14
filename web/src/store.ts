@@ -4,6 +4,9 @@
 import {
   applyRemote,
   emptyState,
+  LIMITS,
+  isCalendarAccountSummary,
+  type CalendarAccountSummary,
   type SyncState,
 } from "@pocketed/shared";
 import { api, ApiError } from "./api";
@@ -17,7 +20,9 @@ function loadState(): SyncState {
     if (!raw) return emptyState();
     const s = JSON.parse(raw) as SyncState;
     if (s && typeof s === "object" && s.notes && Array.isArray(s.outbox)) {
-      return { ...emptyState(), ...s, sections: s.sections ?? {} };
+      return { ...emptyState(), ...s, sections: s.sections ?? {},
+        calendarAccounts: Array.isArray(s.calendarAccounts) ? s.calendarAccounts.filter(isCalendarAccountSummary) : undefined,
+        calendarAccountsRevision: Number.isSafeInteger(s.calendarAccountsRevision) && s.calendarAccountsRevision! >= 0 ? s.calendarAccountsRevision : undefined };
     }
     return emptyState();
   } catch {
@@ -41,6 +46,9 @@ export class SyncManager {
   /** The sync currently running, if any. Overlapping calls share it. */
   private running: Promise<void> | null = null;
   private rerun = false;
+  private stopped = false;
+
+  get isStopped(): boolean { return this.stopped; }
 
   private onWake = () => void this.syncOnce();
 
@@ -56,6 +64,7 @@ export class SyncManager {
   };
 
   private emit(): void {
+    if (this.stopped) return; // a late request must not repopulate storage after sign-out
     try {
       localStorage.setItem(STATE_KEY, JSON.stringify(this.state));
     } catch {
@@ -65,7 +74,18 @@ export class SyncManager {
     this.listeners.forEach((fn) => fn());
   }
 
+  /** Server-owned preferences bypass the notes outbox; stale responses cannot undo a toggle. */
+  setCalendarAccounts(accounts: CalendarAccountSummary[], revision?: number): void {
+    if (this.stopped || !accounts.every(isCalendarAccountSummary)) return;
+    const previous = this.state.calendarAccountsRevision;
+    if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) return;
+    if (previous !== undefined && (revision === undefined || revision < previous)) return;
+    this.state = { ...this.state, calendarAccounts: accounts.map((a) => ({ ...a })), calendarAccountsRevision: revision };
+    this.emit();
+  }
+
   mutate(fn: (s: SyncState) => SyncState): void {
+    if (this.stopped) return;
     this.state = fn(this.state);
     this.emit();
     this.queuePush();
@@ -82,34 +102,50 @@ export class SyncManager {
    * never interleave.
    */
   syncOnce(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     if (this.running) {
       this.rerun = true;
       return this.running;
     }
-    this.running = this.cycle().finally(() => {
-      this.running = null;
-      if (this.rerun) {
+    // Start after assigning `running`, so a subscriber cannot re-enter the
+    // cycle during its first emit. Callers also await any requested follow-up
+    // cycle instead of starting an import from an only-partly-synced state.
+    this.running = Promise.resolve().then(async () => {
+      do {
         this.rerun = false;
-        void this.syncOnce();
-      }
-    });
+        await this.cycle();
+      } while (this.rerun && !this.stopped);
+    }).finally(() => { this.running = null; });
     return this.running;
   }
 
   private async cycle(): Promise<void> {
+    if (this.stopped) return;
     this.phase = "syncing";
     this.emit();
     try {
-      if (this.state.outbox.length) {
-        await api.push(this.cfg, this.state.outbox);
+      // A Calendar/Classroom import (or many offline edits) can exceed one
+      // push's limit. Keep the snapshot until the pull acknowledges its ops.
+      const queued = this.state.outbox.slice();
+      for (let offset = 0; offset < queued.length; offset += LIMITS.opsPerPush) {
+        if (this.stopped) return;
+        await api.push(this.cfg, queued.slice(offset, offset + LIMITS.opsPerPush));
       }
+      let caughtUp = false;
       for (let guard = 0; guard < 25; guard++) {
         const page = await api.pull(this.cfg, this.state.cursor);
+        if (this.stopped) return;
         if (page.ops.length) {
           this.state = applyRemote(this.state, page.ops);
           this.state = { ...this.state, cursor: page.cursor };
         }
-        if (!page.ops.length || page.cursor >= page.serverSeq) break;
+        if (page.calendarAccounts) this.setCalendarAccounts(page.calendarAccounts, page.calendarAccountsRevision);
+        if (!page.ops.length || page.cursor >= page.serverSeq) { caughtUp = true; break; }
+      }
+      if (!caughtUp) {
+        this.rerun = true; // more history: keep syncing before an importer can reconcile
+        this.emit();
+        return;
       }
       this.phase = "synced";
       this.lastSync = Date.now();
@@ -131,6 +167,7 @@ export class SyncManager {
   }
 
   start(): void {
+    this.stopped = false;
     void this.syncOnce();
     this.interval = setInterval(() => void this.syncOnce(), PULL_INTERVAL_MS);
     window.addEventListener("focus", this.onWake);
@@ -138,6 +175,7 @@ export class SyncManager {
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.interval) clearInterval(this.interval);
     this.interval = null;
     if (this.pushTimer) clearTimeout(this.pushTimer);

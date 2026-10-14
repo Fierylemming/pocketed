@@ -42,6 +42,7 @@ import type { Config } from "../config";
 import type { SyncManager } from "../store";
 import { ReminderWatcher } from "../alerts";
 import { CalendarAutoImport } from "../calendar-import";
+import { ClassroomAutoImport } from "../classroom-import";
 import {
   canPromptInstall,
   isInstalled,
@@ -68,6 +69,7 @@ import { textStats } from "../text-edit";
 import { ColorPicker } from "./ColorPicker";
 import { MarkdownView } from "./MarkdownView";
 import { RichTextEditor } from "./RichTextEditor";
+import { CalendarAccounts } from "./CalendarAccounts";
 import { ReminderCalendar } from "./ReminderCalendar";
 import { ReminderPicker, type ReminderValue } from "./ReminderPicker";
 import { Settings } from "./Settings";
@@ -203,11 +205,16 @@ export function Notes({
     return () => w.stop();
   }, [manager]);
 
-  // Keep Google Calendar events imported as reminders (when a calendar is linked).
+  // Calendar events and Classroom deadlines are independent reminder sources.
   useEffect(() => {
-    const c = new CalendarAutoImport(manager);
-    c.start();
-    return () => c.stop();
+    const calendar = new CalendarAutoImport(manager);
+    const classroom = new ClassroomAutoImport(manager);
+    calendar.start();
+    classroom.start();
+    return () => {
+      calendar.stop();
+      classroom.stop();
+    };
   }, [manager]);
 
   const now = Date.now();
@@ -1001,6 +1008,8 @@ export function Notes({
               {/* Reminders calendar with colour coding & filtering */}
               <div id="calendar">
                 <ReminderCalendar
+                  accounts={manager.state.calendarAccounts}
+                  accountControls={<CalendarAccounts manager={manager} />}
                   notes={all}
                   sections={pathNamedSections}
                   now={now}
@@ -1712,7 +1721,7 @@ function ReminderComposer({
 
 /* ---- Compact Reminder Card ---- */
 
-function ReminderCard({
+export function ReminderCard({
   note,
   now,
   sectionBadge,
@@ -1759,6 +1768,14 @@ function ReminderCard({
             📅 Google Calendar
           </span>
         )}
+        {note.source === "classroom" && (
+          <span
+            className="location-badge source-badge"
+            title="Imported from Google Classroom. Teacher changes update this deadline; marking done here does not submit work."
+          >
+            🎓 Google Classroom
+          </span>
+        )}
         {sectionBadge && onOpenSection && (
           <button
             type="button"
@@ -1772,7 +1789,9 @@ function ReminderCard({
       </div>
 
       <div className="item-title">{title}</div>
-      {body && <div className="reminder-body">{body}</div>}
+      {body && (note.source === "classroom"
+        ? <MarkdownView source={body} className="reminder-body" />
+        : <div className="reminder-body">{body}</div>)}
 
       <div className="meta">
         {meta ? meta : "Completed"}

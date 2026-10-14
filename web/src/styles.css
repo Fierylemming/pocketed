@@ -1594,3 +1594,15 @@ button.linklike.inline-link { display: inline; padding: 0; font-size: inherit; }
   .draft-status { justify-content: center; }
   .rte-pos { display: none; }
 }
+
+/* Account filters are independent of colour chips and Classroom assignments. */
+.account-filter { margin: 0.75rem 0 1rem; padding: 0.75rem; border: 1px solid var(--line-strong); border-radius: 10px; }
+.account-filter > p:first-child { margin-top: 0; }
+.account-filter > p:last-child { margin-bottom: 0; }
+.account-switches { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.account-switch { display: flex; align-items: center; gap: 0.5rem; max-width: 100%; padding: 0.45rem 0.65rem; border: 1px solid var(--line-strong); border-radius: 8px; cursor: pointer; }
+.account-switch > span:first-of-type { overflow-wrap: anywhere; }
+.account-switch input { width: 1rem; height: 1rem; flex-shrink: 0; margin: 0; padding: 0; accent-color: var(--accent, #4285f4); }
+.account-switch.is-hidden { opacity: 0.75; }
+.account-card { margin: 0.75rem 0; padding: 0.75rem; border: 1px solid var(--line-strong); border-radius: 10px; overflow-wrap: anywhere; }
+.account-card > p:first-child { margin-top: 0; }

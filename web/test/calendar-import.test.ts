@@ -39,6 +39,9 @@ function fakeServer() {
       const cursor = Number(url.searchParams.get("cursor"));
       return Response.json({ ops: log.slice(cursor), cursor: log.length, serverSeq: log.length });
     }
+    if (url.pathname === "/v1/calendar") {
+      return Response.json({ connected: srv.connected, mode: srv.google ? "google" : "ical", feed: null, connectedAt: NOW, googleAvailable: true, problem: null });
+    }
     if (url.pathname === "/v1/calendar/feed") {
       srv.feedCalls++;
       if (!srv.connected) return Response.json({ error: "No calendar connected." }, { status: 409 });

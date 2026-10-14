@@ -21,6 +21,13 @@
 // Sign in with Google (needs GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET secrets):
 //   POST /v1/google/start         { returnUrl } -> { url } of Google's consent page
 //   GET  /v1/google/callback      public; Google returns here, then back to the app
+//
+// Classroom assignments (student-only, read-only, independent of Calendar):
+//   GET  /v1/classroom            safe connection status
+//   POST /v1/classroom/start      { returnUrl } -> Google's consent URL
+//   GET  /v1/classroom/callback   public; one-time state bound to Classroom
+//   GET  /v1/classroom/feed       full published coursework for active student classes
+//   POST /v1/classroom/disconnect forget tokens and remove only Classroom reminders
 
 import {
   LIMITS,
@@ -44,6 +51,14 @@ import {
   startGoogleSignIn,
   type GoogleConfig,
 } from "./google";
+import {
+  classroomFeed,
+  classroomRedirectUriFor,
+  classroomStatus,
+  disconnectClassroom,
+  finishClassroomSignIn,
+  startClassroomSignIn,
+} from "./classroom";
 import { D1Store, type Store } from "./store";
 
 export interface Env {
@@ -52,13 +67,18 @@ export interface Env {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GOOGLE_REDIRECT_URI?: string;
+  GOOGLE_CLASSROOM_REDIRECT_URI?: string;
 }
 
 export function googleConfig(env: Partial<Env>): GoogleConfig | undefined {
   const clientId = env.GOOGLE_CLIENT_ID?.trim();
   const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
   if (!clientId || !clientSecret) return undefined;
-  return { clientId, clientSecret, redirectUri: env.GOOGLE_REDIRECT_URI?.trim() || undefined };
+  return {
+    clientId, clientSecret,
+    redirectUri: env.GOOGLE_REDIRECT_URI?.trim() || undefined,
+    classroomRedirectUri: env.GOOGLE_CLASSROOM_REDIRECT_URI?.trim() || undefined,
+  };
 }
 
 const CORS = {
@@ -70,7 +90,7 @@ const CORS = {
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", ...CORS },
+    headers: { "content-type": "application/json", "cache-control": "no-store", ...CORS },
   });
 }
 
@@ -85,6 +105,14 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   } catch {
     return null;
   }
+}
+
+function selectedAccount(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value || value.length > LIMITS.sourceAccountIdChars) {
+    throw new CalendarInputError("A valid accountId is required.");
+  }
+  return value;
 }
 
 /** Injectable for tests. */
@@ -124,6 +152,13 @@ export async function handle(req: Request, store: Store, deps: Deps = {}): Promi
       url.searchParams,
       now(),
       fetcher,
+    );
+  }
+
+  if (url.pathname === "/v1/classroom/callback" && req.method === "GET") {
+    if (!deps.google) return json({ error: "Google Classroom isn't set up on this server." }, 404);
+    return finishClassroomSignIn(
+      store, deps.google, classroomRedirectUriFor(deps.google, url), url.searchParams, now(), fetcher,
     );
   }
 
@@ -217,7 +252,48 @@ export async function handle(req: Request, store: Store, deps: Deps = {}): Promi
       Math.max(1, Number(url.searchParams.get("limit") ?? 200) || 200),
     );
     const page = await store.listOps(cursor, limit);
-    return json({ ...page, serverSeq: await store.serverSeq() });
+    const accountState = await store.getGoogleState();
+    return json({ ...page, serverSeq: await store.serverSeq(), calendarAccounts: accountState.accounts, calendarAccountsRevision: accountState.revision });
+  }
+
+  // ---- Classroom: separate credentials and reminder source from Calendar ----
+  if (url.pathname === "/v1/classroom" || url.pathname.startsWith("/v1/classroom/")) {
+    const google = deps.google;
+    try {
+      if (url.pathname === "/v1/classroom" && req.method === "GET") {
+        return json(await classroomStatus(store, !!google));
+      }
+      if (url.pathname === "/v1/classroom/start" && req.method === "POST") {
+        if (!google) return json({ error: "Google Classroom needs the server's Google OAuth settings (see SETUP.md)." }, 501);
+        const body = await readJson(req);
+        const authUrl = await startClassroomSignIn(
+          store, google, classroomRedirectUriFor(google, url), body?.returnUrl, now(),
+        );
+        return json({ url: authUrl });
+      }
+      if (url.pathname === "/v1/classroom/feed" && req.method === "GET") {
+        const accountId = selectedAccount(url.searchParams.get("accountId") ?? undefined);
+        const rows = await store.listClassroom();
+        if (accountId === undefined && rows.length > 1) throw new CalendarInputError("Choose a Classroom account to check (accountId is required).");
+        if (!(await store.getClassroom(accountId))) return json({ error: "No Classroom account connected." }, 409);
+        if (!google) return json({ error: "Google Classroom is no longer set up on this server. Check the server's Google OAuth settings." }, 502);
+        return new Response(JSON.stringify(await classroomFeed(store, google, now(), fetcher, accountId)), {
+          headers: { "content-type": "application/json", "cache-control": "no-store", ...CORS },
+        });
+      }
+      if (url.pathname === "/v1/classroom/disconnect" && req.method === "POST") {
+        const body = await readJson(req);
+        const accountId = selectedAccount(body?.accountId);
+        if (accountId === undefined && (await store.listClassroom()).length > 1) throw new CalendarInputError("Choose a Classroom account to disconnect (accountId is required).");
+        if (accountId !== undefined && !(await store.getClassroom(accountId))) throw new CalendarInputError("That Classroom account is no longer connected.", 404);
+        const removed = await disconnectClassroom(store, now(), fetcher, accountId);
+        return json({ ...await classroomStatus(store, !!google), removed });
+      }
+    } catch (e) {
+      if (e instanceof CalendarInputError) return json({ error: e.message }, e.status);
+      throw e;
+    }
+    return json({ error: "not found" }, 404);
   }
 
   // ---- calendar (secret link or Google sign-in) ----
@@ -231,20 +307,27 @@ export async function handle(req: Request, store: Store, deps: Deps = {}): Promi
       }
       if (url.pathname === "/v1/calendar" && req.method === "POST") {
         const body = await readJson(req);
+        if ((await store.listGoogle()).length > 1 && body?.replaceGoogle !== true) {
+          throw new CalendarInputError("A secret link replaces every connected Calendar account. Confirm replacement first.", 409);
+        }
         await connectCalendar(store, body?.url, now(), fetcher);
-        // One source at a time: a secret link replaces a Google sign-in.
-        await disconnectGoogle(store, fetcher);
+        // Secret-link mode remains an alternative to Google Calendar accounts.
+        await disconnectGoogle(store, fetcher, undefined, now());
         return json(await status());
       }
       if (url.pathname === "/v1/calendar/feed" && req.method === "GET") {
-        if (await store.getGoogle()) {
+        const accountId = selectedAccount(url.searchParams.get("accountId") ?? undefined);
+        const rows = await store.listGoogle();
+        if (accountId === undefined && rows.length > 1) throw new CalendarInputError("Choose a Calendar account to check (accountId is required).");
+        if (accountId !== undefined && !(await store.getGoogle(accountId))) throw new CalendarInputError("No calendar connected.", 409);
+        if (rows.length) {
           if (!google) {
             throw new CalendarInputError(
               "Sign in with Google is no longer set up on this server. Connect the calendar again in Settings.",
               502,
             );
           }
-          const feed = await googleFeed(store, google, now(), fetcher);
+          const feed = await googleFeed(store, google, now(), fetcher, accountId);
           return new Response(JSON.stringify(feed), {
             headers: { "content-type": "application/json", "cache-control": "no-store", ...CORS },
           });
@@ -252,8 +335,29 @@ export async function handle(req: Request, store: Store, deps: Deps = {}): Promi
         return await proxyFeed(store, fetcher, CORS);
       }
       if (url.pathname === "/v1/calendar/disconnect" && req.method === "POST") {
-        await disconnectGoogle(store, fetcher);
-        await store.setCalendar(null);
+        const body = await readJson(req);
+        const accountId = selectedAccount(body?.accountId);
+        if (accountId === undefined && (await store.listGoogle()).length > 1) throw new CalendarInputError("Choose a Calendar account to disconnect (accountId is required).");
+        if (accountId !== undefined && !(await store.getGoogle(accountId))) throw new CalendarInputError("That Calendar account is no longer connected.", 404);
+        await disconnectGoogle(store, fetcher, accountId, now());
+        if (accountId === undefined) {
+          await store.setCalendar(null);
+          // Secret-link reminders have no account ID. Cleanup is synced too.
+          for (const note of await store.allNotes()) {
+            if (note.source === "gcal" && !note.deleted) await store.appendOp({
+              id: crypto.randomUUID(), kind: "delete", noteId: note.id, updatedAt: Math.max(now(), note.updatedAt),
+              source: "gcal", sourceRef: "calendar-removed", sourceAccountId: note.sourceAccountId ?? null,
+            });
+          }
+        }
+        return json(await status());
+      }
+      if (url.pathname === "/v1/calendar/visibility" && req.method === "POST") {
+        const body = await readJson(req);
+        const accountId = selectedAccount(body?.accountId);
+        if (!accountId || typeof body?.visible !== "boolean") throw new CalendarInputError("accountId and visible (true or false) are required.");
+        if (!(await store.setGoogleVisibility(accountId, body.visible))) throw new CalendarInputError("That Calendar account is no longer connected.", 404);
+        // A visibility change never deletes reminders, changes Classroom, or revokes tokens.
         return json(await status());
       }
       if (url.pathname === "/v1/google/start" && req.method === "POST") {
@@ -277,10 +381,13 @@ export async function handle(req: Request, store: Store, deps: Deps = {}): Promi
   }
 
   if (url.pathname === "/v1/snapshot" && req.method === "GET") {
+    const accountState = await store.getGoogleState();
     return json({
       notes: await store.allNotes(),
       sections: await store.allSections(),
       serverSeq: await store.serverSeq(),
+      calendarAccounts: accountState.accounts,
+      calendarAccountsRevision: accountState.revision,
     });
   }
 

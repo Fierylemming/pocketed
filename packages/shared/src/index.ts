@@ -7,3 +7,4 @@ export * from "./auth";
 export * from "./calendar";
 export * from "./calendar-util";
 export * from "./google-calendar";
+export * from "./classroom";

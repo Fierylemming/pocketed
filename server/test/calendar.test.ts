@@ -77,6 +77,7 @@ describe("calendar endpoints", () => {
     const a = await app();
     expect((await a.call("/v1/calendar")).body).toEqual({
       connected: false,
+      accounts: [], accountsRevision: 0,
       mode: null,
       feed: null,
       connectedAt: null,
@@ -116,6 +117,7 @@ describe("calendar endpoints", () => {
     expect(c.status).toBe(200);
     expect(c.body).toEqual({
       connected: true,
+      accounts: [], accountsRevision: 0,
       mode: "ical",
       googleAvailable: false,
       problem: null,

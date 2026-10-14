@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { GoogleCalendar, GoogleEvent, GoogleEventLabel } from "@pocketed/shared";
+import type { GoogleCalendar, GoogleEvent, GoogleEventLabel, Op } from "@pocketed/shared";
 import { handle } from "../src/worker";
 import { MemoryStore } from "../src/store";
-import { GOOGLE_SCOPE, normalizeReturnUrl } from "../src/google";
+import { GOOGLE_SCOPE, GOOGLE_CALENDAR_SCOPES, normalizeReturnUrl } from "../src/google";
 
 const PASS = "test-password-1";
 const GOOGLE = { clientId: "cid.apps.googleusercontent.com", clientSecret: "shh" };
@@ -30,7 +30,14 @@ function fakeGoogle() {
   const calls: Call[] = [];
   const g = {
     calls,
-    scope: GOOGLE_SCOPE,
+    scope: GOOGLE_CALENDAR_SCOPES.join(" "),
+    accountId: "google-home",
+    email: "me@gmail.com",
+    invalidProfile: false,
+    eventWait: null as Promise<void> | null,
+    onEvents: null as (() => void) | null,
+    refreshWait: null as Promise<void> | null,
+    onRefresh: null as (() => void) | null,
     refreshError: null as string | null,
     tokenCount: 0,
     calendarPages: [{ items: [{
@@ -92,6 +99,7 @@ function fakeGoogle() {
       const u = new URL(url);
       if (url.startsWith("https://oauth2.googleapis.com/token")) {
         const form = new URLSearchParams(body);
+        if (form.get("grant_type") === "refresh_token") { g.onRefresh?.(); if (g.refreshWait) await g.refreshWait; }
         if (form.get("grant_type") === "refresh_token" && g.refreshError) {
           return Response.json({ error: g.refreshError }, { status: 400 });
         }
@@ -100,10 +108,11 @@ function fakeGoogle() {
           access_token: `at-${g.tokenCount}`,
           expires_in: 3600,
           scope: g.scope,
-          ...(form.get("grant_type") === "authorization_code" ? { refresh_token: "rt-1" } : {}),
+          ...(form.get("grant_type") === "authorization_code" ? { refresh_token: g.accountId === "google-home" ? "rt-1" : `rt-${g.accountId}` } : {}),
         });
       }
       if (url.startsWith("https://oauth2.googleapis.com/revoke")) return new Response("");
+      if (u.hostname === "openidconnect.googleapis.com") return Response.json(g.invalidProfile ? {} : { sub: g.accountId, email: g.email });
       if (u.pathname.endsWith("/users/me/calendarList/primary")) {
         return Response.json({ id: "me@gmail.com", colorId: "14", backgroundColor: "#9fe1e7" });
       }
@@ -119,6 +128,8 @@ function fakeGoogle() {
       }
       const eventPath = /\/calendars\/([^/]+)\/events$/.exec(u.pathname);
       if (eventPath) {
+        g.onEvents?.();
+        if (g.eventWait) await g.eventWait;
         const id = decodeURIComponent(eventPath[1]);
         if (g.unauthorizedOnce) {
           g.unauthorizedOnce = false;
@@ -209,7 +220,8 @@ describe("sign in with Google", () => {
     expect(u.origin + u.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
     expect(u.searchParams.get("client_id")).toBe(GOOGLE.clientId);
     expect(u.searchParams.get("redirect_uri")).toBe("https://w.example/v1/google/callback");
-    expect(u.searchParams.get("scope")).toBe(GOOGLE_SCOPE);
+    expect(u.searchParams.get("scope")).toBe(GOOGLE_CALENDAR_SCOPES.join(" "));
+    expect(u.searchParams.get("prompt")).toBe("select_account consent");
     expect(u.searchParams.get("access_type")).toBe("offline");
     expect(u.searchParams.get("state")!.length).toBeGreaterThan(20);
   });
@@ -223,7 +235,7 @@ describe("sign in with Google", () => {
     const state = new URL(s.body.url).searchParams.get("state")!;
     const cb = await a.raw(`/v1/google/callback?state=${state}&code=c`, undefined, null);
     expect(cb.status).toBe(302);
-    expect(cb.headers.get("location")).toBe(APP + "#google=connected");
+    expect(cb.headers.get("location")).toBe(APP + "#google=connected&account=google%3Agoogle-home");
 
     const tokenCall = a.g.calls.find((c) => c.url.includes("/token"))!;
     const form = new URLSearchParams(tokenCall.body);
@@ -436,5 +448,191 @@ describe("sign in with Google", () => {
     expect(c.body).toMatchObject({ connected: true, mode: "ical" });
     expect(a.store.google).toBeNull();
     expect(a.g.calls.some((x) => x.url.includes("/revoke"))).toBe(true);
+  });
+});
+
+
+describe("multiple Calendar accounts", () => {
+  async function twoAccounts() {
+    const a = await app();
+    await a.signIn();
+    a.g.accountId = "google-school";
+    a.g.email = "student@school.example";
+    await a.signIn();
+    return a;
+  }
+
+  it("adds school without replacing home, returns both identities, and reconnects in place", async () => {
+    const a = await twoAccounts();
+    const status = (await a.call("/v1/calendar")).body;
+    expect(status.accounts.map((r: any) => r.email)).toEqual(["me@gmail.com", "student@school.example"]);
+    expect(await a.store.listGoogle()).toHaveLength(2);
+    expect(a.g.calls.some((c) => c.url.includes("/revoke"))).toBe(false);
+    await a.call("/v1/calendar/visibility", { accountId: "google:google-school", visible: false });
+    const before = await a.store.getGoogle("google:google-school");
+    await a.signIn();
+    expect(await a.store.listGoogle()).toHaveLength(2);
+    expect(await a.store.getGoogle("google:google-school")).toMatchObject({ visible: false, id: before!.id });
+    expect((await a.store.getGoogle("google:google-school"))!.connectedAt).toBeGreaterThan(before!.connectedAt);
+    expect(await a.store.getGoogle("google:google-home")).not.toBeNull();
+    expect(JSON.stringify((await a.call("/v1/calendar")).body)).not.toMatch(/rt-|at-|refreshToken|accessToken/);
+  });
+
+  it("persists account visibility in sync pulls without changing events, assignments or tokens", async () => {
+    const a = await twoAccounts();
+    await a.store.setClassroom({ accountId: "google-school", refreshToken: "class-refresh", accessToken: "class-access",
+      accessExpires: 99_000_000, email: "student@school.example", connectedAt: 1_000_000, problem: null });
+    const note: Op = { id: "seed", kind: "upsert", noteId: "homework", text: "Homework", source: "classroom",
+      sourceAccountId: "google-school", reminderAt: 99_000_000, updatedAt: 1_000_000 };
+    await a.store.appendOp(note);
+    const sequence = await a.store.serverSeq();
+    const revision = a.store.googleRevision;
+    const response = await a.raw("/v1/calendar/visibility", { accountId: "google:google-school", visible: false });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const changed = await response.json() as any;
+    expect(changed.accounts.find((r: any) => r.id === "google:google-school").visible).toBe(false);
+    expect(changed.accounts.find((r: any) => r.id === "google:google-home").visible).toBe(true);
+    expect(changed.accountsRevision).toBe(revision + 1);
+    const pull = (await a.call("/v1/pull?cursor=0")).body;
+    expect(pull.calendarAccounts).toEqual(changed.accounts);
+    expect(pull.calendarAccountsRevision).toBe(changed.accountsRevision);
+    expect(await a.store.serverSeq()).toBe(sequence);
+    expect(a.store.notes.get("homework")?.deleted).toBe(false);
+    expect((await a.call("/v1/classroom")).body.connected).toBe(true);
+    expect((await a.call("/v1/calendar/feed?accountId=google%3Agoogle-school")).status).toBe(200); // still syncs while hidden
+    expect(a.g.calls.some((c) => c.url.includes("/revoke"))).toBe(false);
+    await a.call("/v1/calendar/visibility", { accountId: "google:google-school", visible: true });
+    expect((await a.store.getGoogle("google:google-school"))?.visible).toBe(true);
+    expect(a.store.notes.get("homework")?.deleted).toBe(false);
+  });
+
+  it("requires account selection for ambiguous feed/disconnect requests and never echoes tokens", async () => {
+    const a = await twoAccounts();
+    expect((await a.call("/v1/calendar/feed")).status).toBe(400);
+    expect((await a.call("/v1/calendar/disconnect", {})).status).toBe(400);
+    expect(await a.store.listGoogle()).toHaveLength(2);
+    for (const id of ["google:google-home", "google:google-school"]) {
+      const feed = await a.call(`/v1/calendar/feed?accountId=${encodeURIComponent(id)}`);
+      expect(feed.status).toBe(200);
+      expect(feed.body.accountId).toBe(id);
+      expect(JSON.stringify(feed.body)).not.toMatch(/rt-|at-|refreshToken|accessToken/);
+    }
+    expect((await a.call("/v1/calendar/feed?accountId=missing")).status).toBe(409);
+  });
+
+  it("rejects unauthenticated, malformed and unknown visibility changes", async () => {
+    const a = await twoAccounts();
+    expect((await a.raw("/v1/calendar/visibility", { accountId: "google:google-school", visible: false }, null)).status).toBe(401);
+    for (const body of [{}, { accountId: null, visible: false }, { accountId: "", visible: false },
+      { accountId: "google:google-school", visible: "false" }]) {
+      expect((await a.call("/v1/calendar/visibility", body)).status).toBe(400);
+    }
+    expect((await a.call("/v1/calendar/visibility", { accountId: "missing", visible: false })).status).toBe(404);
+    expect((await a.store.getGoogle("google:google-school"))?.visible).toBe(true);
+  });
+
+  it("disconnects only school events, preserving home and the school's Classroom grant", async () => {
+    const a = await twoAccounts();
+    await a.store.setClassroom({ accountId: "google-school", refreshToken: "class-refresh", accessToken: "class-access",
+      accessExpires: 99_000_000, email: "student@school.example", connectedAt: 1_000_000, problem: null });
+    for (const [id, source, owner] of [["school-event", "gcal", "google:google-school"], ["home-event", "gcal", "google:google-home"],
+      ["homework", "classroom", "google-school"], ["personal", null, null]] as const) {
+      await a.store.appendOp({ id: `seed-${id}`, kind: "upsert", noteId: id, text: id, source, sourceAccountId: owner,
+        reminderAt: 99_000_000, updatedAt: 1_000_000 });
+    }
+    const result = await a.call("/v1/calendar/disconnect", { accountId: "google:google-school" });
+    expect(result.status).toBe(200);
+    expect(result.body.accounts.map((r: any) => r.id)).toEqual(["google:google-home"]);
+    expect(a.store.notes.get("school-event")?.deleted).toBe(true);
+    for (const id of ["home-event", "homework", "personal"]) expect(a.store.notes.get(id)?.deleted).toBe(false);
+    expect(a.g.calls.some((c) => c.url.includes("/revoke"))).toBe(false);
+    expect(await a.store.getClassroom("google-school")).not.toBeNull();
+    const pull = (await a.call("/v1/pull?cursor=0")).body;
+    expect(pull.ops).toContainEqual(expect.objectContaining({ noteId: "school-event", kind: "delete", sourceAccountId: "google:google-school" }));
+    await a.call("/v1/calendar/disconnect", { accountId: "google:google-home" });
+    expect(a.g.calls.filter((c) => c.url.includes("/revoke"))).toHaveLength(1);
+    expect(await a.store.getClassroom("google-school")).not.toBeNull();
+  });
+
+  it("allows an in-flight feed to finish when visibility changes, but rejects it after disconnect", async () => {
+    const a = await twoAccounts();
+    let release!: () => void;
+    let entered = new Promise<void>((resolve) => { a.g.onEvents = resolve; });
+    a.g.eventWait = new Promise<void>((resolve) => { release = resolve; });
+    const pending = a.call("/v1/calendar/feed?accountId=google%3Agoogle-school");
+    await entered;
+    await a.call("/v1/calendar/visibility", { accountId: "google:google-school", visible: false });
+    release();
+    expect((await pending).status).toBe(200);
+    entered = new Promise<void>((resolve) => { a.g.onEvents = resolve; });
+    a.g.eventWait = new Promise<void>((resolve) => { release = resolve; });
+    const disconnected = a.call("/v1/calendar/feed?accountId=google%3Agoogle-school");
+    await entered;
+    await a.call("/v1/calendar/disconnect", { accountId: "google:google-school" });
+    release();
+    expect((await disconnected).status).toBe(409);
+    expect(await a.store.getGoogle("google:google-home")).not.toBeNull();
+  });
+
+  it("a late refresh cannot resurrect school or overwrite home's credentials or visibility", async () => {
+    const a = await twoAccounts();
+    a.advance(2 * 3_600_000);
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { a.g.onRefresh = resolve; });
+    a.g.refreshWait = new Promise<void>((resolve) => { release = resolve; });
+    const pending = a.call("/v1/calendar/feed?accountId=google%3Agoogle-school");
+    await entered;
+    await a.call("/v1/calendar/visibility", { accountId: "google:google-home", visible: false });
+    const home = await a.store.getGoogle("google:google-home");
+    await a.call("/v1/calendar/disconnect", { accountId: "google:google-school" });
+    release();
+    expect((await pending).status).toBe(502);
+    expect(await a.store.getGoogle("google:google-school")).toBeNull();
+    expect(await a.store.getGoogle("google:google-home")).toEqual(home);
+  });
+
+  it("never replaces the migrated connection when adding another account, and reconnects legacy IDs in place", async () => {
+    const a = await app();
+    await a.store.setGoogle({ refreshToken: "legacy-refresh", accessToken: "legacy-access", accessExpires: 99_000_000,
+      email: "me@gmail.com", connectedAt: 1, problem: null });
+    await a.signIn();
+    const legacy = await a.store.getGoogle("google:legacy");
+    expect(legacy).toMatchObject({ accountId: "google-home", legacyIds: true });
+    expect(await a.store.listGoogle()).toHaveLength(1);
+    a.g.accountId = "google-school"; a.g.email = "student@school.example";
+    await a.signIn();
+    expect(await a.store.listGoogle()).toHaveLength(2);
+    expect(await a.store.getGoogle("google:legacy")).toEqual(legacy);
+  });
+
+  it("requires explicit confirmation before a secret link replaces multiple accounts", async () => {
+    const a = await twoAccounts();
+    expect((await a.call("/v1/calendar", { url: "https://calendar.google.com/x/basic.ics" })).status).toBe(409);
+    expect(await a.store.listGoogle()).toHaveLength(2);
+    expect((await a.call("/v1/calendar", { url: "https://calendar.google.com/x/basic.ics", replaceGoogle: true })).status).toBe(200);
+    expect(await a.store.listGoogle()).toHaveLength(0);
+  });
+
+  it("keeps existing accounts when Google cannot identify a new sign-in", async () => {
+    const a = await app(); await a.signIn();
+    const before = await a.store.listGoogle();
+    a.g.invalidProfile = true;
+    const response = await a.signIn();
+    expect(decodeURIComponent(response.headers.get("location")!)).toMatch(/#google=error.*identify/);
+    expect(await a.store.listGoogle()).toEqual(before);
+  });
+
+  it("bounds the number of accounts without blocking an existing account's reconnect", async () => {
+    const a = await app();
+    for (let i = 0; i < 10; i++) await a.store.setGoogle({ id: `google:seed-${i}`, accountId: `seed-${i}`, legacyIds: false,
+      refreshToken: `refresh-${i}`, accessToken: `access-${i}`, accessExpires: 99_000_000,
+      email: `user${i}@example.com`, connectedAt: 1_000_000, problem: null });
+    const limited = await a.signIn();
+    expect(decodeURIComponent(limited.headers.get("location")!)).toMatch(/up to 10 Calendar accounts/);
+    expect(await a.store.listGoogle()).toHaveLength(10);
+    a.g.accountId = "seed-0"; a.g.email = "user0@example.com";
+    expect((await a.signIn()).headers.get("location")).toContain("#google=connected");
+    expect(await a.store.listGoogle()).toHaveLength(10);
   });
 });

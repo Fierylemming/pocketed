@@ -7,7 +7,7 @@
 // megabytes, far beyond the Workers free plan's 10 ms CPU budget, while
 // streaming the response through costs the Worker almost nothing.
 
-import { truncate } from "@pocketed/shared";
+import { truncate, type CalendarAccountSummary } from "@pocketed/shared";
 import type { Store } from "./store";
 
 const FETCH_TIMEOUT_MS = 20_000;
@@ -16,6 +16,8 @@ export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface CalendarStatus {
   connected: boolean;
+  accounts: CalendarAccountSummary[];
+  accountsRevision: number;
   /** How it's connected: Google sign-in (with colours) or the secret iCal link. */
   mode: "google" | "ical" | null;
   /** Safe-to-show description: the Google account, or a hint of the link (never the secret). */
@@ -67,10 +69,12 @@ export async function calendarStatus(
   store: Store,
   googleAvailable = false,
 ): Promise<CalendarStatus> {
-  const google = await store.getGoogle();
+  const { accounts, revision: accountsRevision } = await store.getGoogleState();
+  const google = accounts[0];
   if (google) {
     return {
       connected: true,
+      accounts, accountsRevision,
       mode: "google",
       feed: google.email ?? "Google account",
       connectedAt: google.connectedAt,
@@ -81,6 +85,7 @@ export async function calendarStatus(
   const cfg = await store.getCalendar();
   return {
     connected: cfg !== null,
+    accounts, accountsRevision,
     mode: cfg ? "ical" : null,
     feed: cfg ? feedHint(cfg.url) : null,
     connectedAt: cfg?.connectedAt ?? null,
@@ -170,4 +175,9 @@ export async function proxyFeed(
       ...extraHeaders,
     },
   });
+}
+
+/** Explicit allowlist: never serialize Google credentials in status or sync. */
+export async function calendarAccountSummaries(store: Store): Promise<CalendarAccountSummary[]> {
+  return (await store.getGoogleState()).accounts;
 }
