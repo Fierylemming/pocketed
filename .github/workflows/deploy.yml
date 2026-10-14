@@ -18,6 +18,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -26,11 +29,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install
         run: npm ci
+
+      - name: Security audit
+        run: npm run audit
 
       - name: Test
         run: npm test
@@ -38,16 +44,16 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Build website
+        run: npm run build:web
+        env:
+          VITE_SERVER_URL: ${{ vars.WORKER_URL }}
+
       - name: Deploy sync server (Workers + D1)
         run: npm run deploy:server
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Build website
-        run: npm run build:web
-        env:
-          VITE_SERVER_URL: ${{ vars.WORKER_URL }}
 
       - name: Publish website (Pages)
         run: npx wrangler pages deploy web/dist --project-name=${{ vars.PAGES_PROJECT || 'pocketed' }} --branch=main

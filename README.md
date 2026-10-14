@@ -7,6 +7,28 @@ Your "things I need to remember" app: quick notes and reminders, on every device
 - **Sync server** — a Cloudflare Worker + D1 database. Free tier.
 - **Offline-first** — every device keeps a local copy; changes sync when online; conflicts resolve last-write-wins.
 
+## Workspace and appearance
+
+The workspace uses a shared navy-and-teal design system with responsive layouts,
+line icons, live overview counts, recent notes, and an on-demand note/reminder editor.
+Use **New note** to open the editor; closing it keeps the current draft mounted.
+Text drafts continue to be saved on this device using the existing draft storage.
+
+Choose **Light**, **Dark**, or **System** in the sidebar, in **Settings → Appearance**,
+or using the icons on the sign-in screen. The choice is remembered on this device
+and shared between tabs. System mode follows live operating-system changes.
+The theme is applied before rendering (including offline), and the calendar,
+editor, settings, and privacy page use the same theme. Text-size preferences
+remain available in Settings.
+
+Keyboard support includes visible focus indicators, a skip-to-workspace link,
+and focus containment / Escape-to-close for Settings and the mobile navigation.
+Reduced-motion preferences are respected. These are UI improvements, not a claim
+of banking-grade security or regulatory certification.
+
+Design tokens are in `web/src/styles.css`; theme state is in `web/src/theme.ts`.
+`web/public/theme-init.js` mirrors the initial theme resolution before React loads.
+
 ## Day-to-day: change, push, done
 
 You don't need a terminal or PowerShell for routine changes:
@@ -27,19 +49,40 @@ web               the website / installable app (React + Vite -> Cloudflare Page
                   imports: src/ical.ts, src/calendar-import.ts, src/classroom-import.ts
                   note editor: src/components/RichTextEditor.tsx (+ src/text-edit.ts), formatting: src/markdown.ts
   web/public      manifest, service worker (sw.js), app icons, Cloudflare headers
-.github/workflows ci.yml (checks on branches/PRs) and deploy.yml (publishes on main)
+.github/workflows checks.yml (checks on branches/PRs and weekly) and deploy.yml (publishes on main)
 ```
 
 ## Local development
 
+Use Node.js 22 LTS (at least 22.12; `.nvmrc` selects the maintained 22.x release).
+The CI/deployment workflows use the same Node version.
+
 ```
-npm install
+nvm use                  # if you use nvm
+npm ci
 npm run dev:server        # terminal 1: local API on http://localhost:8787 (local D1)
 npm run dev               # terminal 2: website on http://localhost:5173
 npm run check             # tests + typecheck + production build (run before pushing)
+npm run audit             # includes tooling; fails on moderate or higher advisories
 ```
 
 In development the site already points at the local API, so you only type a password.
+The development/preview servers accept localhost, IP addresses, and Arena's
+`.e2b.app` preview hosts rather than arbitrary Host headers. For another trusted
+preview host, explicitly extend `allowedHosts` in `web/vite.config.ts`.
+
+## Security maintenance
+
+- Dependencies are locked in `package-lock.json`; use `npm ci` for repeatable builds.
+- Branch/PR checks and a weekly check run the full test/build suite and audit both
+  production and development dependencies. Moderate-or-higher findings fail the audit.
+- Deployment audits, tests, type-checks, and builds the website **before** publishing
+  either the Worker or Pages site. An audit failure or build error stops deployment.
+- KaTeX renders notes as untrusted input: HTML/links/external resources are disabled,
+  with limits on macro expansion and layout size. Security regression tests cover
+  malicious commands and inherited trust settings.
+- A clean npm audit means no known advisories in the resolved dependency tree at
+  that time; it is not a full security assessment or a banking-security certification.
 
 ## Installing on Android
 

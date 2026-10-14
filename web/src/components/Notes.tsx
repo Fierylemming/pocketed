@@ -73,6 +73,9 @@ import { CalendarAccounts } from "./CalendarAccounts";
 import { ReminderCalendar } from "./ReminderCalendar";
 import { ReminderPicker, type ReminderValue } from "./ReminderPicker";
 import { Settings } from "./Settings";
+import { Brand, Icon } from "./Icon";
+import { ThemePicker } from "./ThemePicker";
+import { useDialog } from "../use-dialog";
 
 const DISMISS_INSTALL_KEY = "pocketed.v2.installDismissed";
 const EXPANDED_SECTIONS_KEY = "pocketed.v2.expandedSections";
@@ -149,6 +152,8 @@ export function Notes({
   // Navigation: null = Home screen, string = inside a Section folder (or GENERAL_SECTION_ID)
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
 
+  const [composerOpen, setComposerOpen] = useState(() => !!loadNoteDraft());
+
   // Two-button creator mode: "note" | "reminder" | null
   const [composerKind, setComposerKind] = useState<ItemKind>("note");
   const [composerPreselectAt, setComposerPreselectAt] = useState<number | null>(null);
@@ -166,6 +171,7 @@ export function Notes({
 
   // Sidebar (mobile drawer) + inline "new section" in the sidebar
   const [navOpen, setNavOpen] = useState(false);
+  const sidebarRef = useDialog<HTMLElement>(() => setNavOpen(false), navOpen);
   const [addingSidebarSection, setAddingSidebarSection] = useState(false);
   const [sidebarSectionName, setSidebarSectionName] = useState("");
   // Which sections are unfolded in the sidebar tree (remembered on this device)
@@ -180,9 +186,18 @@ export function Notes({
   const [editing, setEditing] = useState<string | null>(null);
   const [expandedNoteId, setExpandedNoteId] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+  const lightboxRef = useDialog(() => setLightboxImage(null), !!lightboxImage);
   const [, setClock] = useState(0);
 
   const composerRef = useRef<HTMLDivElement | null>(null);
+
+  // A drawer should not keep focus trapped after switching to a desktop layout.
+  useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 768px)");
+    const onResize = () => { if (!media?.matches) setNavOpen(false); };
+    media?.addEventListener("change", onResize);
+    return () => media?.removeEventListener("change", onResize);
+  }, []);
 
   // Re-render every 30s so "5m ago" and due/upcoming labels stay current.
   useEffect(() => {
@@ -310,11 +325,29 @@ export function Notes({
   }
 
   function openReminderComposerForDate(ts: number, color: ReminderColorId) {
+    setComposerOpen(true);
     setComposerKind("reminder");
     setComposerPreselectAt(ts);
     setComposerPreselectColor(color);
     setComposerKey((k) => k + 1);
-    composerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    requestAnimationFrame(() => {
+      composerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      composerRef.current?.querySelector<HTMLInputElement>('[aria-label="Reminder title"]')?.focus({ preventScroll: true });
+    });
+  }
+
+  function openNoteComposer() {
+    setComposerOpen(true);
+    setComposerKind("note");
+    requestAnimationFrame(() => {
+      composerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      composerRef.current?.querySelector<HTMLInputElement>('[aria-label="Note title"]')?.focus({ preventScroll: true });
+    });
+  }
+
+  function closeComposer() {
+    setComposerOpen(false);
+    document.querySelector<HTMLButtonElement>(".new-note-button")?.focus();
   }
 
   const searching = query.trim().length > 0;
@@ -406,7 +439,7 @@ export function Notes({
           <h2 className="block-title">{isHome ? "Sections" : "Subsections"}</h2>
           <p className="muted small">
             {isHome
-              ? "Click a section to open its folder. Sections can hold subsections, too."
+              ? "Bring a little structure to your everyday."
               : `Folders inside ${parentName}. They can have subsections of their own.`}
           </p>
         </div>
@@ -443,7 +476,7 @@ export function Notes({
                   className="section-folder-link"
                   onClick={() => goTo(GENERAL_SECTION_ID)}
                 >
-                  <span className="section-folder-icon" aria-hidden="true">🗂️</span>
+                  <span className="section-folder-icon" aria-hidden="true"><Icon name="folder" /></span>
                   <span className="section-folder-title">General (unsectioned)</span>
                   <span className="section-folder-counts">
                     {generalCounts.notes} {generalCounts.notes === 1 ? "note" : "notes"} ·{" "}
@@ -495,7 +528,7 @@ export function Notes({
               onClick={() => goTo(sec.id)}
             >
               <span className="section-folder-icon" aria-hidden="true">
-                {counts.subsections > 0 ? "🗃️" : "📁"}
+                <Icon name="folder" />
               </span>
               <span className="section-folder-title">{sec.name}</span>
               <span className="section-folder-counts">
@@ -518,7 +551,7 @@ export function Notes({
                   setRenameSectionValue(sec.name);
                 }}
               >
-                ✏️
+                <Icon name="edit" />
               </button>
               <button
                 type="button"
@@ -527,7 +560,7 @@ export function Notes({
                 title="Delete section"
                 onClick={() => handleDeleteSection(sec)}
               >
-                🗑️
+                <Icon name="trash" />
               </button>
             </div>
           </>
@@ -577,17 +610,9 @@ export function Notes({
       : activeSectionObj
         ? activeSectionObj.name
         : "General";
-  const pageIcon =
-    activeSectionId === null
-      ? "🏠"
-      : activeSectionObj
-        ? activeSectionPath.length > 1
-          ? "📂"
-          : "📁"
-        : "🗂️";
   const pageSub =
     activeSectionId === null
-      ? `${homeSections.due.length} due · ${homeSections.upcoming.length} upcoming reminders · ${homeSections.notes.length} notes`
+      ? "A clear view of your notes, plans, and what’s next."
       : (() => {
           const c = sectionCounts(all, targetSectionId, now);
           const subs = subSections.length;
@@ -596,38 +621,39 @@ export function Notes({
 
   return (
     <div className={"shell" + (navOpen ? " nav-open" : "")}>
-      {/* ---- Sidebar (Notion-style workspace navigation) ---- */}
-      <aside className="sidebar" aria-label="Navigation">
+      <a className="skip-link" href="#workspace-content">Skip to workspace</a>
+      {/* ---- Workspace navigation ---- */}
+      <aside ref={sidebarRef} className="sidebar" id="workspace-navigation" aria-label="Navigation" tabIndex={-1}>
         <div className="sidebar-top">
-          <div className="workspace">
-            <span className="workspace-logo" aria-hidden="true">🗒️</span>
-            <span className="workspace-name">Pocketed</span>
-          </div>
+          <Brand />
           <button
             type="button"
             className="icon-btn sidebar-close"
             aria-label="Close menu"
             onClick={() => setNavOpen(false)}
           >
-            ✕
+            <Icon name="close" />
           </button>
         </div>
 
+        <div className="workspace-profile"><span className="profile-avatar">P</span><div><strong>Personal workspace</strong><span>Your everyday, together</span></div></div>
+        <span className="nav-heading">WORKSPACE</span>
         <nav className="sidebar-nav">
           <button
             type="button"
             className={"nav-item" + (activeSectionId === null ? " active" : "")}
+            aria-current={activeSectionId === null ? "page" : undefined}
             onClick={() => goTo(null)}
           >
-            <span className="nav-icon">🏠</span>
-            <span className="nav-label">Home</span>
+            <span className="nav-icon"><Icon name="home" /></span>
+            <span className="nav-label">Overview</span>
           </button>
           <button
             type="button"
             className="nav-item"
             onClick={() => goHomeAndScroll("calendar")}
           >
-            <span className="nav-icon">📅</span>
+            <span className="nav-icon"><Icon name="calendar" /></span>
             <span className="nav-label">Calendar</span>
           </button>
           <button
@@ -635,7 +661,7 @@ export function Notes({
             className="nav-item"
             onClick={() => goHomeAndScroll("due")}
           >
-            <span className="nav-icon">⏰</span>
+            <span className="nav-icon"><Icon name="clock" /></span>
             <span className="nav-label">Due now</span>
             {sidebarCounts.due > 0 && (
               <span className="nav-count due">{sidebarCounts.due}</span>
@@ -707,7 +733,7 @@ export function Notes({
                       className={"nav-item" + (active ? " active" : "")}
                       onClick={() => goTo(sec.id)}
                     >
-                      <span className="nav-icon">{depth > 0 ? "📂" : "📁"}</span>
+                      <span className="nav-icon"><Icon name="folder" /></span>
                       <span className="nav-label">{sec.name}</span>
                       {due > 0 ? (
                         <span className="nav-count due">{due}</span>
@@ -727,7 +753,7 @@ export function Notes({
                 }
                 onClick={() => goTo(GENERAL_SECTION_ID)}
               >
-                <span className="nav-icon">🗂️</span>
+                <span className="nav-icon"><Icon name="folder" /></span>
                 <span className="nav-label">General</span>
                 <span className="nav-count">
                   {generalCounts.notes + generalCounts.reminders}
@@ -741,6 +767,8 @@ export function Notes({
         </div>
 
         <div className="sidebar-foot">
+          <div className="sidebar-theme-label">APPEARANCE</div>
+          <ThemePicker />
           <button
             type="button"
             className="nav-item"
@@ -749,9 +777,10 @@ export function Notes({
               setNavOpen(false);
             }}
           >
-            <span className="nav-icon">⚙️</span>
+            <span className="nav-icon"><Icon name="settings" /></span>
             <span className="nav-label">Settings</span>
           </button>
+          <div className="sidebar-signoff"><Icon name="pocket" /><span>A little more organised.</span></div>
         </div>
       </aside>
       {navOpen && (
@@ -759,19 +788,21 @@ export function Notes({
       )}
 
       {/* ---- Main column: topbar + page ---- */}
-      <main className="main">
+      <main className="main" {...(navOpen ? { inert: "" } : {})}>
         <div className="topbar">
           <button
             type="button"
             className="icon-btn menu-btn"
             aria-label="Open menu"
+            aria-expanded={navOpen}
+            aria-controls="workspace-navigation"
             onClick={() => setNavOpen(true)}
           >
-            ☰
+            <Icon name="menu" />
           </button>
           <nav className="breadcrumb" aria-label="Breadcrumb">
             <button type="button" className="crumb" onClick={() => goTo(null)}>
-              Home
+              <Icon name="home" /> <span>Workspace</span>
             </button>
             {activeSectionPath.slice(0, -1).map((s) => (
               <span key={s.id} className="crumb-part">
@@ -789,7 +820,7 @@ export function Notes({
             )}
           </nav>
           <div className="topbar-search">
-            <span className="search-icon" aria-hidden="true">🔍</span>
+            <span className="search-icon" aria-hidden="true"><Icon name="search" /></span>
             <input
               type="search"
               value={query}
@@ -812,11 +843,9 @@ export function Notes({
           </button>
         </div>
 
-        <div className="page">
+        <div className="page" id="workspace-content" tabIndex={-1}>
+          <div className="page-kicker"><span className="eyebrow">{activeSectionId === null ? "YOUR WORKSPACE, AT A GLANCE" : "YOUR PERSONAL WORKSPACE"}</span><span className="workspace-date">{new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "long", year: "numeric" }).format(now)}</span></div>
           <header className="page-header">
-            <div className="page-icon" aria-hidden="true">
-              {pageIcon}
-            </div>
             <div className="page-title-block">
               {renamingSectionId === activeSectionId && activeSectionObj ? (
                 <div className="inline-rename">
@@ -856,11 +885,12 @@ export function Notes({
                       ))}
                     </nav>
                   )}
-                  <h1 className="page-title">{pageTitle}</h1>
+                  <h1 className="page-title">{activeSectionId === null ? "Your day, in perspective." : pageTitle}</h1>
                   <p className="page-sub">{pageSub}</p>
                 </>
               )}
             </div>
+            <button type="button" className="primary new-note-button" aria-expanded={composerOpen} aria-controls="workspace-composer" onClick={openNoteComposer}><Icon name="plus" /> New note</button>
             {activeSectionObj && renamingSectionId !== activeSectionObj.id && (
               <div className="page-actions">
                 <button
@@ -871,7 +901,7 @@ export function Notes({
                     setRenameSectionValue(activeSectionObj.name);
                   }}
                 >
-                  ✏️ Rename
+                  <Icon name="edit" /> Rename
                 </button>
                 <button
                   type="button"
@@ -883,18 +913,27 @@ export function Notes({
                     )
                   }
                 >
-                  📦 Move
+                  <Icon name="folder" /> Move
                 </button>
                 <button
                   type="button"
                   className="small-btn danger-outline"
                   onClick={() => handleDeleteSection(activeSectionObj)}
                 >
-                  🗑️ Delete
+                  <Icon name="trash" /> Delete
                 </button>
               </div>
             )}
           </header>
+
+          {activeSectionId === null && !searching && (
+            <section className="overview-stats" aria-label="Workspace summary">
+              <div className="stat-card"><span className="stat-icon"><Icon name="note" /></span><span className="stat-label">Total notes</span><strong>{all.filter((n) => !isReminderItem(n)).length.toString().padStart(2, "0")}</strong><span className="stat-caption">Ideas worth keeping</span></div>
+              <div className="stat-card"><span className="stat-icon"><Icon name="clock" /></span><span className="stat-label">Upcoming</span><strong>{homeSections.upcoming.length.toString().padStart(2, "0")}</strong><span className="stat-caption">Reminders on the horizon</span></div>
+              <div className={"stat-card" + (homeSections.due.length ? " attention" : "")}><span className="stat-icon"><Icon name="calendar" /></span><span className="stat-label">Due now</span><strong>{homeSections.due.length.toString().padStart(2, "0")}</strong><span className="stat-caption">{homeSections.due.length ? "Ready for your attention" : "You’re all caught up"}</span></div>
+              <div className="stat-card"><span className="stat-icon"><Icon name="folder" /></span><span className="stat-label">Sections</span><strong>{userSections.length.toString().padStart(2, "0")}</strong><span className="stat-caption">A place for everything</span></div>
+            </section>
+          )}
 
           {activeSectionObj && movingSectionId === activeSectionObj.id && (
             <MoveSectionPanel
@@ -910,7 +949,8 @@ export function Notes({
             !localStorage.getItem(DISMISS_INSTALL_KEY) && <InstallBanner />}
 
           {/* Two buttons to choose Note vs Reminder creation */}
-          <div className="creator-shell" ref={composerRef}>
+          <div className="creator-shell" ref={composerRef} id="workspace-composer" hidden={!composerOpen}>
+            <div className="composer-heading"><div><h2>Make space for an idea.</h2><p className="muted small">Capture a note or plan your next reminder.</p></div><button type="button" className="icon-btn" aria-label="Close composer" onClick={closeComposer}><Icon name="close" /></button></div>
             <div className="creator-switcher" role="tablist" aria-label="Choose what to create">
               <button
                 type="button"
@@ -924,7 +964,7 @@ export function Notes({
                   setComposerPreselectAt(null);
                 }}
               >
-                📝 New Note
+                <Icon name="note" /> New Note
               </button>
               <button
                 type="button"
@@ -935,7 +975,7 @@ export function Notes({
                 }
                 onClick={() => setComposerKind("reminder")}
               >
-                ⏰ New Reminder
+                <Icon name="clock" /> New Reminder
               </button>
             </div>
 
@@ -989,8 +1029,8 @@ export function Notes({
           ) : (
             /* ---- HOME VIEW ---- */
             <>
-              {homeSections.due.length > 0 && (
-                <SectionBlock title="Due now" tone="due" id="due">
+              <SectionBlock title="Needs your attention" tone={homeSections.due.length ? "due" : undefined} id="due">
+                {homeSections.due.length > 0 ? (
                   <ul className="notes">
                     {homeSections.due.map((n) =>
                       renderReminderCard(
@@ -999,11 +1039,16 @@ export function Notes({
                       ),
                     )}
                   </ul>
-                </SectionBlock>
-              )}
+                ) : <div className="all-clear"><span className="all-clear-icon"><Icon name="check" /></span><div><strong>All clear. A little room to focus.</strong><p>No reminders due right now. Plan ahead with your calendar below.</p></div><button type="button" className="small-btn" onClick={() => openReminderComposerForDate(Date.now() + 3600000, DEFAULT_REMINDER_COLOR)}><Icon name="plus" /> Add reminder</button></div>}
+              </SectionBlock>
 
               {/* Sections (Folders) gallery */}
               {renderSectionsPanel(topSections, true)}
+
+              <section className="recent-notes" aria-label="Recent notes">
+                <div className="block-head"><h2 className="block-title">Recent notes</h2><span className="muted small">Pick up where you left off</span></div>
+                {all.some((n) => !isReminderItem(n)) ? <ul className="notes">{all.filter((n) => !isReminderItem(n)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 4).map((n) => renderNoteCard(n, n.sectionId ? sectionMap.get(n.sectionId) : null))}</ul> : <div className="workspace-empty"><span className="empty-icon"><Icon name="note" /></span><h3>Your next idea starts here.</h3><p>From a passing thought to a bigger plan. Give it a place to grow.</p><button type="button" className="small-btn" onClick={openNoteComposer}>Create your first note <Icon name="arrow" /></button></div>}
+              </section>
 
               {/* Reminders calendar with colour coding & filtering */}
               <div id="calendar">
@@ -1049,6 +1094,9 @@ export function Notes({
       {lightboxImage && (
         <div
           className="overlay"
+          ref={lightboxRef}
+          tabIndex={-1}
+          aria-modal="true"
           onClick={() => setLightboxImage(null)}
           role="dialog"
           aria-label="Image preview"
@@ -1145,7 +1193,7 @@ function SectionTreeOptions({
         .map(({ section, depth }) => (
           <option key={section.id} value={section.id}>
             {"\u00a0\u00a0\u00a0".repeat(depth)}
-            {depth > 0 ? "└ 📂 " : "📁 "}
+            {depth > 0 ? "└ " : ""}
             {section.name}
           </option>
         ))}
@@ -1192,7 +1240,7 @@ function MoveSectionPanel({
           onChange={(e) => setTarget(e.target.value)}
           aria-label="New parent section"
         >
-          <option value="">🏠 Top level (no parent)</option>
+          <option value="">Top level (no parent)</option>
           <SectionTreeOptions sections={sections} exclude={exclude} />
         </select>
       </label>
@@ -1220,6 +1268,7 @@ function NoteComposer({
   manager: SyncManager;
 }) {
   const [draft] = useState(loadNoteDraft);
+  const [saved, setSaved] = useState(false);
   const [title, setTitle] = useState(draft?.title ?? "");
   const [body, setBody] = useState(draft?.body ?? "");
   const [sectionId, setSectionId] = useState<string | null>(defaultSectionId);
@@ -1246,6 +1295,7 @@ function NoteComposer({
 
   function discardDraft() {
     if (!confirm("Discard this unsaved note?")) return;
+    setSaved(false);
     setTitle("");
     setBody("");
     setChecklist([]);
@@ -1309,6 +1359,7 @@ function NoteComposer({
           Date.now(),
         ).state,
     );
+    setSaved(true);
     setTitle("");
     setBody("");
     setImages([]);
@@ -1325,8 +1376,9 @@ function NoteComposer({
 
   return (
     <form className="composer note-composer" onSubmit={submit}>
+      {saved && <p className="save-feedback" role="status"><Icon name="check" /> Note added to your workspace.</p>}
       <div className="composer-header-row">
-        <span className="composer-badge note-badge">📝 Large Note</span>
+        <span className="composer-badge note-badge"><Icon name="note" /> Note</span>
         {sections.length > 0 && (
           <select
             className="section-select"
@@ -1334,7 +1386,7 @@ function NoteComposer({
             onChange={(e) => setSectionId(e.target.value || null)}
             aria-label="Note section"
           >
-            <option value="">🗂️ General (No section)</option>
+            <option value="">General (No section)</option>
             <SectionTreeOptions sections={sections} />
           </select>
         )}
@@ -1342,7 +1394,7 @@ function NoteComposer({
 
       <input
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(e) => { setTitle(e.target.value); setSaved(false); }}
         placeholder="Note title…"
         maxLength={LIMITS.noteTitleChars}
         aria-label="Note title"
@@ -1381,7 +1433,7 @@ function NoteComposer({
           ))}
         </div>
       )}
-      {imgErr && <p className="err small">{imgErr}</p>}
+      {imgErr && <p className="err small" role="alert">{imgErr}</p>}
 
       {/* Interactive Checklist Builder */}
       {showChecklistBuilder && (
@@ -1458,7 +1510,7 @@ function NoteComposer({
             className="small-btn"
             onClick={() => fileInputRef.current?.click()}
           >
-            📷 Upload Image{images.length > 0 ? ` (${images.length})` : ""}
+            <Icon name="image" /> Upload Image{images.length > 0 ? ` (${images.length})` : ""}
           </button>
           <button
             type="button"
@@ -1467,7 +1519,7 @@ function NoteComposer({
             }
             onClick={() => setShowChecklistBuilder((v) => !v)}
           >
-            ☑️ Checklist{checklist.length > 0 ? ` (${checklist.length})` : ""}
+            <Icon name="list" /> Checklist{checklist.length > 0 ? ` (${checklist.length})` : ""}
           </button>
           <button
             type="button"
@@ -1475,14 +1527,14 @@ function NoteComposer({
             onClick={() => setPinned((p) => !p)}
             aria-pressed={pinned}
           >
-            📌 {pinned ? "Pinned" : "Pin"}
+            <Icon name="pin" /> {pinned ? "Pinned" : "Pin"}
           </button>
         </div>
 
         <div className="composer-submit">
           {draftSavedAt != null && (
             <span className="muted small draft-status" title="Unsaved notes are kept on this device until you add or discard them">
-              💾 Draft kept on this device ·{" "}
+              <Icon name="note" /> Draft kept on this device ·{" "}
               <button type="button" className="linklike inline-link" onClick={discardDraft}>
                 Discard
               </button>
@@ -1512,6 +1564,7 @@ function ReminderComposer({
   sections: Section[];
   manager: SyncManager;
 }) {
+  const [saved, setSaved] = useState(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [location, setLocation] = useState("");
@@ -1556,6 +1609,7 @@ function ReminderComposer({
           Date.now(),
         ).state,
     );
+    setSaved(true);
     setTitle("");
     setBody("");
     setLocation("");
@@ -1572,15 +1626,16 @@ function ReminderComposer({
       style={{ borderLeft: `4px solid ${selectedColorDef.hex}` }}
       onSubmit={submit}
     >
+      {saved && <p className="save-feedback" role="status"><Icon name="check" /> Reminder added to your calendar.</p>}
       <div className="composer-header-row">
         <span
           className="composer-badge reminder-badge"
           style={{
-            backgroundColor: selectedColorDef.bg,
-            borderColor: selectedColorDef.border,
+            backgroundColor: `color-mix(in srgb, ${selectedColorDef.hex} 14%, var(--card))`,
+            borderColor: `color-mix(in srgb, ${selectedColorDef.hex} 40%, var(--line))`,
           }}
         >
-          ⏰ Small Reminder · {selectedColorDef.label}
+          <Icon name="clock" /> Reminder · {selectedColorDef.label}
         </span>
         {sections.length > 0 && (
           <select
@@ -1589,7 +1644,7 @@ function ReminderComposer({
             onChange={(e) => setSectionId(e.target.value || null)}
             aria-label="Reminder section"
           >
-            <option value="">🗂️ General (No section)</option>
+            <option value="">General (No section)</option>
             <SectionTreeOptions sections={sections} />
           </select>
         )}
@@ -1597,7 +1652,7 @@ function ReminderComposer({
 
       <input
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(e) => { setTitle(e.target.value); setSaved(false); }}
         placeholder="Reminder title (e.g. Call dentist, Pick up parcel)…"
         maxLength={LIMITS.noteTitleChars}
         aria-label="Reminder title"
@@ -1621,7 +1676,7 @@ function ReminderComposer({
           className={"small-btn" + (activeTab === "due" ? " active-tab" : "")}
           onClick={() => setActiveTab("due")}
         >
-          ⏰ When it's due
+          <Icon name="clock" /> When it's due
         </button>
         <button
           type="button"
@@ -1632,7 +1687,7 @@ function ReminderComposer({
           }
           onClick={() => setActiveTab("location")}
         >
-          📍 Location{location.trim() ? `: ${location.trim()}` : ""}
+          <Icon name="location" /> Location{location.trim() ? `: ${location.trim()}` : ""}
         </button>
         <button
           type="button"
@@ -1682,7 +1737,7 @@ function ReminderComposer({
                   setLocation((cur) => (cur === loc ? "" : loc))
                 }
               >
-                📍 {loc}
+                <Icon name="location" /> {loc}
               </button>
             ))}
           </div>
@@ -1701,11 +1756,11 @@ function ReminderComposer({
         </div>
       )}
 
-      {remError && <p className="err small">{remError}</p>}
+      {remError && <p className="err small" role="alert">{remError}</p>}
 
       <div className="composer-footer">
         <span className="muted small">
-          {location.trim() ? `📍 ${location.trim()}` : "Tip: Use the Location & Colour tabs above"}
+          {location.trim() ? location.trim() : "Tip: Use the Location & Colour tabs above"}
         </span>
         <button
           className="primary"
@@ -1750,14 +1805,14 @@ export function ReminderCard({
       <div className="reminder-card-header">
         <span
           className="color-tag"
-          style={{ backgroundColor: col.bg, borderColor: col.border }}
+          style={{ backgroundColor: `color-mix(in srgb, ${col.hex} 14%, var(--card))`, borderColor: `color-mix(in srgb, ${col.hex} 40%, var(--line))` }}
         >
           <span className="color-dot" style={{ backgroundColor: col.hex }} />
           {col.label}
         </span>
         {note.location && (
           <span className="location-badge" title="Location">
-            📍 {note.location}
+            <Icon name="location" /> {note.location}
           </span>
         )}
         {note.source === "gcal" && (
@@ -1765,7 +1820,7 @@ export function ReminderCard({
             className="location-badge source-badge"
             title="Imported from Google Calendar. Changes there update this reminder."
           >
-            📅 Google Calendar
+            <Icon name="calendar" /> Google Calendar
           </span>
         )}
         {note.source === "classroom" && (
@@ -1773,7 +1828,7 @@ export function ReminderCard({
             className="location-badge source-badge"
             title="Imported from Google Classroom. Teacher changes update this deadline; marking done here does not submit work."
           >
-            🎓 Google Classroom
+            <Icon name="note" /> Google Classroom
           </span>
         )}
         {sectionBadge && onOpenSection && (
@@ -1783,7 +1838,7 @@ export function ReminderCard({
             onClick={() => onOpenSection(sectionBadge.id)}
             title={`Open section ${sectionBadge.name}`}
           >
-            📁 {sectionBadge.name}
+            <Icon name="folder" /> {sectionBadge.name}
           </button>
         )}
       </div>
@@ -1814,11 +1869,11 @@ export function ReminderCard({
               manager.mutate((s) => markReminderDone(s, note.id, Date.now()))
             }
           >
-            ✅
+            <Icon name="check" />
           </button>
         )}
         <button className="icon" aria-label="Edit" onClick={onEdit}>
-          ✏️
+          <Icon name="edit" />
         </button>
         <button
           className="icon"
@@ -1829,7 +1884,7 @@ export function ReminderCard({
             }
           }}
         >
-          🗑️
+          <Icon name="trash" />
         </button>
       </div>
     </li>
@@ -1918,15 +1973,15 @@ function LargeNoteCard({
     <li className={"note large-note-card" + (note.pinned ? " is-pinned" : "")}>
       <div className="large-note-top">
         <div className="large-note-badges">
-          <span className="note-type-pill">📝 Note</span>
-          {note.pinned && <span className="pin-badge">📌 Pinned</span>}
+          <span className="note-type-pill"><Icon name="note" /> Note</span>
+          {note.pinned && <span className="pin-badge"><Icon name="pin" /> Pinned</span>}
           {sectionBadge && onOpenSection && (
             <button
               type="button"
               className="section-tag-btn"
               onClick={() => onOpenSection(sectionBadge.id)}
             >
-              📁 {sectionBadge.name}
+              <Icon name="folder" /> {sectionBadge.name}
             </button>
           )}
         </div>
@@ -1941,7 +1996,7 @@ function LargeNoteCard({
               )
             }
           >
-            📌
+            <Icon name="pin" />
           </button>
           <button
             className="icon"
@@ -1949,10 +2004,10 @@ function LargeNoteCard({
             title="Open full note view"
             onClick={onExpand}
           >
-            🔍
+            <Icon name="search" />
           </button>
           <button className="icon" aria-label="Edit" onClick={onEdit}>
-            ✏️
+            <Icon name="edit" />
           </button>
           <button
             className="icon"
@@ -1963,13 +2018,13 @@ function LargeNoteCard({
               }
             }}
           >
-            🗑️
+            <Icon name="trash" />
           </button>
         </div>
       </div>
 
-      <h3 className="large-note-title" onClick={onExpand}>
-        {title}
+      <h3 className="large-note-title">
+        <button type="button" className="note-title-link" onClick={onExpand}>{title}</button>
       </h3>
 
       {body && (
@@ -2068,7 +2123,7 @@ function LargeNoteCard({
               className="interact-btn"
               onClick={() => fileInputRef.current?.click()}
             >
-              📷 + Image
+              <Icon name="image" /> + Image
             </button>
           )}
           <button
@@ -2076,10 +2131,10 @@ function LargeNoteCard({
             className="interact-btn"
             onClick={() => setAddingTask((v) => !v)}
           >
-            ☑️ + Task
+            <Icon name="list" /> + Task
           </button>
           <button type="button" className="interact-btn" onClick={onExpand}>
-            🔍 Open & Interact
+            <Icon name="expand" /> Open note
           </button>
         </div>
       </div>
@@ -2106,6 +2161,7 @@ function NoteDetailModal({
   onEdit: () => void;
   onViewImage: (src: string) => void;
 }) {
+  const dialogRef = useDialog(onClose);
   const title = itemTitle(note);
   const body = itemBody(note);
   const images = note.images ?? [];
@@ -2170,15 +2226,20 @@ function NoteDetailModal({
   const stats = textStats(body);
 
   return (
-    <div className="overlay" onClick={onClose} role="dialog" aria-label={title}>
+    <div className="overlay" onClick={onClose}>
       <div
         className="card modal note-detail-modal"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="note-detail-header">
           <div>
             {section && (
-              <span className="section-tag-btn">📁 {section.name}</span>
+              <span className="section-tag-btn"><Icon name="folder" /> {section.name}</span>
             )}
             <h2>{title}</h2>
             <p className="muted small">
@@ -2189,13 +2250,14 @@ function NoteDetailModal({
             </p>
           </div>
           <div className="row">
+            <button type="button" className="icon-btn" aria-label="Close note" onClick={onClose}><Icon name="close" /></button>
             <button
               type="button"
               className="small-btn"
               onClick={() => void copyContent("plain")}
               title="Copy the note as plain text, without formatting marks"
             >
-              {copied === "plain" ? "✓ Copied" : "📋 Copy text"}
+              {copied === "plain" ? "✓ Copied" : "Copy text"}
             </button>
             <button
               type="button"
@@ -2203,7 +2265,7 @@ function NoteDetailModal({
               onClick={() => void copyContent("md")}
               title="Copy the note with its Markdown formatting"
             >
-              {copied === "md" ? "✓ Copied" : "Ⓜ️ Copy Markdown"}
+              {copied === "md" ? "✓ Copied" : "Copy Markdown"}
             </button>
             <button
               type="button"
@@ -2211,10 +2273,10 @@ function NoteDetailModal({
               onClick={downloadNote}
               title="Download this note as a Markdown (.md) file"
             >
-              ⬇️ Download
+              <Icon name="download" /> Download
             </button>
             <button type="button" className="small-btn primary" onClick={onEdit}>
-              ✏️ Edit
+              <Icon name="edit" /> Edit
             </button>
           </div>
         </div>
@@ -2368,7 +2430,7 @@ function EditItemRow({
     <li className="note editing">
       <div className="composer-header-row">
         <span className="composer-badge">
-          {isRem ? "⏰ Edit Reminder" : "📝 Edit Note"}
+          {isRem ? "Edit Reminder" : "Edit Note"}
         </span>
         {sections.length > 0 && (
           <select
@@ -2376,7 +2438,7 @@ function EditItemRow({
             value={sectionId ?? ""}
             onChange={(e) => setSectionId(e.target.value || null)}
           >
-            <option value="">🗂️ General</option>
+            <option value="">General</option>
             <SectionTreeOptions sections={sections} />
           </select>
         )}
@@ -2415,7 +2477,7 @@ function EditItemRow({
           <input
             value={location}
             onChange={(e) => setLocation(e.target.value)}
-            placeholder="📍 Location (optional)…"
+            placeholder="Location (optional)…"
             aria-label="Edit location"
           />
           <ColorPicker value={color} original={note.color} onChange={setColor} />
@@ -2424,7 +2486,7 @@ function EditItemRow({
             initialRepeat={note.repeat ?? "none"}
             onChange={setRem}
           />
-          {rem.error && <p className="err small">{rem.error}</p>}
+          {rem.error && <p className="err small" role="alert">{rem.error}</p>}
         </>
       ) : (
         <>
@@ -2459,7 +2521,7 @@ function EditItemRow({
             className="small-btn"
             onClick={() => fileInputRef.current?.click()}
           >
-            📷 Upload Image
+            <Icon name="image" /> Upload Image
           </button>
         </>
       )}

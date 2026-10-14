@@ -3,26 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#101418" />
+    <meta name="theme-color" content="#f3f6fa" />
+    <script src="/theme-init.js"></script>
+    <link rel="icon" href="/icons/pocketed.svg" type="image/svg+xml" />
     <title>Pocketed · Privacy policy</title>
     <style>
-      :root { color-scheme: dark; }
+      :root { color-scheme: light; --bg: #f3f6fa; --card: #fff; --text: #1b2d43; --muted: #5f6e81; --accent: #08787a; --line: #e3e9ef; }
+      :root[data-theme="dark"] { color-scheme: dark; --bg: #101b2b; --card: #19283b; --text: #edf2f8; --muted: #afbed0; --accent: #66d3c5; --line: #2a3b50; }
       body {
         margin: 0;
-        background: #101418;
-        color: #e6e9ee;
+        background: var(--bg);
+        color: var(--text);
         font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       }
-      main { max-width: 42rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
-      h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+      main { max-width: 44rem; margin: 3rem auto; padding: 2.5rem; background: var(--card); border: 1px solid var(--line); border-radius: 1rem; }
+      @media(max-width: 768px) { main { padding: 1.5rem; margin: 1rem; } }
+      h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.04em; margin: 2rem 0 0.6rem; }
       h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; }
-      a { color: #4ea8de; }
-      .muted { color: #9aa4b2; font-size: 0.9rem; }
+      a { color: var(--accent); text-underline-offset: 3px; }
+      a:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+      .muted { color: var(--muted); font-size: 0.9rem; }
       li { margin: 0.25rem 0; }
     </style>
   </head>
   <body>
     <main>
+      <a href="/">← Back to Pocketed</a>
       <h1>Pocketed privacy policy</h1>
       <p class="muted">Last updated: 14 October 2026</p>
 

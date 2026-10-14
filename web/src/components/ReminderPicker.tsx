@@ -118,7 +118,7 @@ export function ReminderPicker({
       {showRepeat && (
         <div className="reminder-picker-row">
           <label className="repeat-field">
-            <span className="repeat-label">🔁 Repeat</span>
+            <span className="repeat-label">Repeat</span>
             <select
               value={repeat}
               onChange={(e) => changeRepeat(e.target.value as RepeatId)}
