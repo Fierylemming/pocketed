@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import "katex/dist/katex.min.css";
 
-type Katex = typeof import("katex");
+type Katex = typeof import("katex").default;
 
 /**
  * Maths written as LaTeX ($x^2$ inline, $$…$$ for display) is typeset with
@@ -29,6 +29,8 @@ function useKatex(): Katex | null {
     let live = true;
     void loadKatex().then((m) => {
       if (live) setMod(m);
+    }).catch(() => {
+      // An unavailable lazy chunk (e.g. offline) leaves readable LaTeX in place.
     });
     return () => {
       live = false;
@@ -40,11 +42,21 @@ function useKatex(): Katex | null {
 /** KaTeX's HTML for a formula, or null while the library hasn't loaded. */
 export function mathHtml(katex: Katex | null, tex: string, display?: boolean): string | null {
   if (!katex) return null;
-  return katex.renderToString(tex, {
-    displayMode: !!display,
-    throwOnError: false,
-    strict: false,
-  });
+  try {
+    return katex.renderToString(tex, {
+      displayMode: !!display,
+      throwOnError: false,
+      strict: false,
+      // Notes and imported assignments are untrusted input. Never enable HTML,
+      // links, or external resources through LaTeX commands.
+      trust: false,
+      maxExpand: 1000,
+      maxSize: 20,
+    });
+  } catch {
+    // Keep the note usable even if malformed input triggers a non-parse error.
+    return null;
+  }
 }
 
 export function MathSpan({ tex, display }: { tex: string; display?: boolean }) {

@@ -39,7 +39,8 @@ describe("Classroom UI", () => {
     manager.state = reconcileClassroom(emptyState(), FEED, NOW).state;
     const note = Object.values(manager.state.notes)[0];
     const html = renderToStaticMarkup(<ReminderCard note={note} now={NOW} manager={manager} onEdit={() => {}} />);
-    expect(html).toContain("🎓 Google Classroom");
+    // Source text remains accessible; decorative line icons replace emoji.
+    expect(html).toContain("Google Classroom</span>");
     expect(html).toContain("Maths: Algebra worksheet");
     expect(html).toContain('href="https://classroom.google.com/c/example/a/worksheet/details"');
     expect(html).toContain('rel="noopener noreferrer"');

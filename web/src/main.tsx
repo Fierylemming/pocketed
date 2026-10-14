@@ -3,7 +3,10 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { captureInstallPrompt } from "./install";
 import { startScaling } from "./scale";
+import { startTheme } from "./theme";
 import "./styles.css";
+
+startTheme();
 
 // Must run before the browser fires beforeinstallprompt (which can be early).
 captureInstallPrompt();

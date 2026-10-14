@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { genRecovery, passwordError } from "@pocketed/shared";
 import { api, ApiError } from "../api";
+import { Brand, Icon } from "./Icon";
+import { ThemePicker } from "./ThemePicker";
 import type { Config } from "../config";
 
 type SetupMode = "loading" | "login" | "create" | "recover" | "showKey";
@@ -113,31 +115,51 @@ export function Setup({
           : (e: FormEvent) => e.preventDefault();
 
   return (
-    <div className="center">
-      <form className="card" onSubmit={onSubmit}>
-        <div className="logo">🗒️</div>
-        <h1>Pocketed</h1>
+    <div className="setup-shell">
+      <aside className="setup-story">
+        <Brand />
+        <div className="story-content">
+          <span className="eyebrow">YOUR PERSONAL WORKSPACE</span>
+          <h2>A little more clarity.<br /><span>A lot more possibility.</span></h2>
+          <p>Make room for what matters. Your notes, plans, and reminders, thoughtfully organised in one place.</p>
+          <div className="story-illustration" aria-hidden="true">
+            <div className="illustration-heading"><span className="illustration-icon"><Icon name="pocket" /></span><span>Everything, in its place.</span><Icon name="check" /></div>
+            <div className="illustration-row"><Icon name="note" /><span>Space for your ideas<small>Capture the details. See the bigger picture.</small></span><span className="illustration-number">01</span></div>
+            <div className="illustration-row"><Icon name="calendar" /><span>A clearer day ahead<small>Keep your plans and reminders together.</small></span><span className="illustration-number">02</span></div>
+            <div className="illustration-row"><Icon name="sync" /><span>Right where you left off<small>Your workspace, across your devices.</small></span><span className="illustration-number">03</span></div>
+          </div>
+        </div>
+        <div className="story-footer"><span>Less noise. More focus.</span><span>Made for your everyday.</span></div>
+      </aside>
+      <main className="setup-main">
+        <header className="setup-top"><span className="setup-mobile-brand"><Brand /></span><ThemePicker compact /></header>
+        <div className="setup-form-wrap">
+      <form className="setup-form" onSubmit={onSubmit}>
+        <div className="setup-form-icon"><Icon name={mode === "recover" || mode === "showKey" ? "pocket" : "note"} /></div>
+        <span className="eyebrow">A SPACE OF YOUR OWN</span>
+        <h1>{mode === "create" ? "Start something good." : mode === "recover" ? "Let’s get you back in." : mode === "showKey" ? "Keep your key safe." : "Welcome back."}</h1>
+        <p className="setup-intro">{mode === "create" ? "Set up your personal workspace in a moment." : mode === "recover" ? "Restore access to your Pocketed workspace." : mode === "showKey" ? "One important detail before you begin." : "Your day, a little more organised. Sign in to Pocketed."}</p>
 
         {editUrl ? (
           <label className="field">
             <span>Server address</span>
-            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" />
+            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" autoComplete="url" spellCheck={false} />
           </label>
         ) : (
           <button type="button" className="linklike" onClick={() => setEditUrl(true)}>
-            advanced: custom server address
+            Connection settings
           </button>
         )}
 
         {mode === "loading" && (
-          <p className="muted">
+          <p className="muted" role="status">
             {serverUrl ? "Contacting your server…" : "Enter your server address to continue."}
           </p>
         )}
 
         {mode === "login" && (
           <>
-            <p className="muted">Your notes, on every device.</p>
+
             <label className="field">
               <span>Password</span>
               <input
@@ -148,9 +170,9 @@ export function Setup({
                 onChange={(e) => setPassword(e.target.value)}
               />
             </label>
-            {err && <p className="err">{err}</p>}
+            {err && <p className="err" role="alert">{err}</p>}
             <button className="primary big" disabled={busy || !password}>
-              {busy ? "Checking…" : "Open my notes"}
+              {busy ? "Checking…" : "Open my workspace"}
             </button>
             <button
               type="button"
@@ -167,7 +189,7 @@ export function Setup({
 
         {mode === "create" && (
           <>
-            <p className="muted">First time here — choose your password.</p>
+
             <label className="field">
               <span>Password (8+ characters)</span>
               <input
@@ -187,7 +209,7 @@ export function Setup({
                 onChange={(e) => setConfirm(e.target.value)}
               />
             </label>
-            {err && <p className="err">{err}</p>}
+            {err && <p className="err" role="alert">{err}</p>}
             <button className="primary big" disabled={busy || !password}>
               {busy ? "Creating…" : "Create my notes space"}
             </button>
@@ -224,7 +246,7 @@ export function Setup({
                 onChange={(e) => setConfirm(e.target.value)}
               />
             </label>
-            {err && <p className="err">{err}</p>}
+            {err && <p className="err" role="alert">{err}</p>}
             <button className="primary big" disabled={busy || !password || !recoveryInput}>
               {busy ? "Resetting…" : "Reset password"}
             </button>
@@ -254,6 +276,10 @@ export function Setup({
           </>
         )}
       </form>
+        <p className="setup-note"><Icon name="sync" /> One workspace. All your devices.</p>
+        </div>
+        <footer className="setup-footer"><span>Pocketed · Your everyday, together.</span><a href="/privacy.html" target="_blank" rel="noreferrer">Privacy policy <Icon name="arrow" /></a></footer>
+      </main>
     </div>
   );
 }

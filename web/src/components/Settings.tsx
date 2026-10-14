@@ -3,6 +3,9 @@ import {
   genRecovery,
   passwordError,
 } from "@pocketed/shared";
+import { Icon } from "./Icon";
+import { ThemePicker } from "./ThemePicker";
+import { useDialog } from "../use-dialog";
 import { api, ApiError } from "../api";
 import { GoogleCalendar } from "./GoogleCalendar";
 import { GoogleClassroom } from "./GoogleClassroom";
@@ -29,10 +32,17 @@ export function Settings({
   onClose: () => void;
   onNewCfg: (c: Config | null) => void;
 }) {
+  const dialogRef = useDialog(onClose);
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="card modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Settings</h2>
+      <div ref={dialogRef} className="card modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+        <header className="settings-header"><div><span className="eyebrow">YOUR WORKSPACE</span><h2 id="settings-title">Settings</h2><p className="muted small">Make Pocketed feel like your own.</p></div><button type="button" className="icon-btn" aria-label="Close settings" onClick={onClose}><Icon name="close" /></button></header>
+        <section className="appearance-section">
+          <h3>Appearance</h3>
+          <p className="muted small">Choose a theme, or follow your device. Saved on this device.</p>
+          <ThemePicker />
+        </section>
+        <hr />
 
         <TextSizePicker />
         <hr />

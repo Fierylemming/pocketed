@@ -7,12 +7,13 @@ export default defineConfig({
   optimizeDeps: { exclude: ["@pocketed/shared"] },
   server: {
     host: true,
-    allowedHosts: true,
+    // Keep localhost/IP access and Arena previews, but reject arbitrary Host headers.
+    allowedHosts: [".e2b.app"],
     port: 5173,
     proxy: {
       "/health": "http://127.0.0.1:8787",
       "/v1": "http://127.0.0.1:8787",
     },
   },
-  preview: { host: true, allowedHosts: true },
+  preview: { host: true, allowedHosts: [".e2b.app"] },
 });

@@ -136,10 +136,9 @@ export function ReminderCalendar({
     <section className="calendar-card" aria-label="Reminders Calendar">
       <div className="calendar-top">
         <div>
-          <h2 className="calendar-heading">📅 Reminders Calendar</h2>
+          <h2 className="calendar-heading">Your calendar</h2>
           <p className="muted small calendar-sub">
-            Click a colour to filter reminders, or select a date to view and schedule. Events that
-            run across several days show as one bar.
+            A little forward thinking. Select a date to see what’s planned.
           </p>
         </div>
         <div className="calendar-nav">
@@ -190,7 +189,7 @@ export function ReminderCalendar({
               className={"color-chip" + (active ? " active" : "")}
               style={
                 active
-                  ? { borderColor: c.border, background: c.bg }
+                  ? { borderColor: `color-mix(in srgb, ${c.hex} 40%, var(--line))`, background: `color-mix(in srgb, ${c.hex} 14%, var(--card))` }
                   : undefined
               }
               onClick={() =>
@@ -345,7 +344,7 @@ function CalendarPill({
     return (
       <div
         className="calendar-pill"
-        style={{ backgroundColor: col.bg, borderLeft: `3px solid ${col.hex}` }}
+        style={{ backgroundColor: `color-mix(in srgb, ${col.hex} 14%, var(--card))`, borderLeft: `3px solid ${col.hex}` }}
         title={`${title}${where}`}
       >
         <span className="calendar-pill-dot" style={{ backgroundColor: col.hex }} />
@@ -369,7 +368,7 @@ function CalendarPill({
         (joinRight ? " join-right" : "")
       }
       style={{
-        backgroundColor: col.bg,
+        backgroundColor: `color-mix(in srgb, ${col.hex} 14%, var(--card))`,
         borderLeft: entry.continuesBefore ? undefined : `3px solid ${col.hex}`,
       }}
       title={`${title}${span ? ` · ${span}` : ""}${where} · day ${entry.dayIndex + 1} of ${entry.dayCount}`}
