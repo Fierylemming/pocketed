@@ -209,6 +209,10 @@ submits it in Classroom. See the README for update, dismissal and disconnect beh
   and deploy both the updated server and website. A missing Classroom API is reported on the first check.
 - **Classroom "redirect_uri_mismatch"**: add `WORKER_URL` + `/v1/classroom/callback` to the OAuth Web
   client. A Calendar callback alone is not enough. For a custom address, check `GOOGLE_CLASSROOM_REDIRECT_URI`.
+- **Google says "Error 400: access_not_configured"**: the **Google Classroom API** isn't enabled in the
+  Cloud project that owns the OAuth client (step 9.1). In console.cloud.google.com select the project whose
+  number matches the start of the client ID, then **APIs & Services → Library → Google Classroom API →
+  Enable**, wait a minute, and try connecting again.
 - **Classroom refuses access (403)**: enable **Google Classroom API** in the project that owns the OAuth
   client, grant both read-only scopes, and ask the school's administrator whether Pocketed is allowed.
 - **No Classroom assignments appear**: connect the student's own account, not a guardian/parent account.
