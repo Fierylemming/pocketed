@@ -24,7 +24,7 @@
   <body>
     <main>
       <h1>Pocketed privacy policy</h1>
-      <p class="muted">Last updated: 11 October 2026</p>
+      <p class="muted">Last updated: 14 October 2026</p>
 
       <p>
         Pocketed is a personal notes and reminders app. It is run privately by its owner for their own
@@ -34,32 +34,44 @@
       <h2>What Pocketed stores</h2>
       <ul>
         <li>Your notes, reminders, sections and settings.</li>
-        <li>A salted hash of your Pocketed password and recovery key (never the password itself).</li>
         <li>
-          If you connect Google Calendar: the connection details (a secret calendar link, or a Google
-          sign-in token) and the reminders created from your events.
+          A salted hash of your Pocketed password and recovery key on the server. Your browser keeps the
+          password on trusted devices so it can sync your notes.
+        </li>
+        <li>
+          If you connect Google Calendar: the connection details (a secret calendar link, or Google
+          sign-in tokens, account identifiers and email addresses for each connected account), account visibility
+          preferences, and the reminders created from your events.
+        </li>
+        <li>
+          If you connect Google Classroom: a Google sign-in token, each connected student account's ID and email,
+          and reminders made from your classes' published assignment/question deadlines.
         </li>
       </ul>
       <p>
-        This is kept in Pocketed's own database (Cloudflare Workers and D1) and in your browser's local
-        storage on the devices you sign in on.
+        Your notes, reminders and sections are kept in Pocketed's own database (Cloudflare Workers and
+        D1) and copied to your browser's local storage on trusted devices. Google tokens and secret calendar
+        links are kept only on the server, never in browser storage.
       </p>
 
       <h2>Google Calendar</h2>
       <p>
         When you choose <b>Sign in with Google</b>, Pocketed asks for read-only access to your Google
-        Calendar (<code>calendar.readonly</code>). It uses that access only to:
+        Calendar (<code>calendar.readonly</code>) plus <code>openid</code> and <code>email</code> to
+        identify the account. Multiple school/home accounts can stay connected. It uses that access only to:
       </p>
       <ul>
-        <li>read the events in your main calendar for roughly the next two months, and</li>
+        <li>identify only the signed-in account and its email address,</li>
+        <li>read the events in all your readable calendars for roughly the next two months, and</li>
         <li>
           turn each event's title, time, location, description and colour into a reminder in Pocketed.
         </li>
       </ul>
       <p>
         Pocketed never changes, deletes or creates anything in your Google Calendar, never reads your
-        Google account's other data, and does not sell, share or transfer Google data to anyone. Google
-        data is not used for advertising or to train AI models, and no person reads it.
+        Drive files, schoolwork or other unrelated Google data through the Calendar connection. Google data
+        is not sold, sent to unrelated users, used for advertising or to train AI models, or used for unrelated
+        human review. It is available to the trusted people using your Pocketed workspace.
       </p>
       <p>
         Pocketed's use and transfer of information received from Google APIs adheres to the
@@ -68,11 +80,53 @@
         >, including the Limited Use requirements.
       </p>
 
+      <p>
+        Account switches filter only the calendar view and are shared across devices using the same workspace.
+        Turning Calendar events off does not disconnect an account or delete its data: hidden events keep syncing,
+        remain in reminder lists/search, and can still send alerts. Classroom assignments remain visible regardless
+        of the Calendar account switches. Other colour/date filters still apply.
+      </p>
+
+      <h2>Google Classroom</h2>
+      <p>
+        Connecting Classroom requests <code>classroom.courses.readonly</code> and
+        <code>classroom.coursework.me.readonly</code>, plus <code>openid</code> and <code>email</code>
+        to identify the connected student account. Pocketed uses that access only to:
+      </p>
+      <ul>
+        <li>list the active classes the student is enrolled in,</li>
+        <li>read published assignment/question titles, descriptions, deadlines and Classroom links, and</li>
+        <li>create or update reminders in Pocketed's calendar.</li>
+      </ul>
+      <p>
+        Google's coursework permission mentions grades, but Pocketed does not fetch grades, submissions,
+        class rosters, Drive files or attachments. It cannot submit work or change anything in Classroom.
+        School-managed accounts may require administrator approval. A guardian account is not a substitute
+        for connecting the student's own account.
+      </p>
+      <p>
+        Classroom and Calendar credentials are stored independently in the server's database. Tokens are
+        never sent to the browser or placed in the redirect URL. Imported reminder data is synced to the
+        trusted devices using the same Pocketed workspace password. It is not shared with unrelated users,
+        used for advertising, sold, or used to train AI models. The Google API Services User Data Policy
+        and Limited Use commitments above apply to Classroom data as well.
+      </p>
+
       <h2>Removing your data</h2>
       <ul>
         <li>
-          In Pocketed: ⚙️ Settings → Google Calendar → <b>Disconnect</b> removes the imported reminders,
-          deletes the stored Google token and asks Google to revoke Pocketed's access.
+          In Pocketed: ⚙️ Settings → Google Calendar → <b>Disconnect account</b> in an account's card removes
+          only that account's Calendar imports and stored credentials. Other accounts and Classroom remain.
+          In Settings → Google Classroom → <b>Disconnect Classroom</b> in a student's card, only that
+          student's Classroom reminders and credentials are removed.
+          Deleting a note/reminder syncs a deletion marker; it is not a secure purge of the underlying
+          sync history, server backups or previously downloaded files.
+        </li>
+        <li>
+          Google can revoke the app's entire grant, not just one feature. Pocketed asks Google to revoke
+          access only when no remaining connection may rely on that account's grant. Unidentified legacy Calendar
+          identities are handled conservatively, so automatic revocation may be deferred rather than break an active connection.
+          You can revoke access directly in each Google account at any time.
         </li>
         <li>
           At any time in your Google account:

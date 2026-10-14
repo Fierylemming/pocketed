@@ -102,7 +102,8 @@ export class ReminderWatcher {
     for (const n of remindersDueBetween(notes, last, now)) {
       const title = itemTitle(n) || "Reminder";
       const body = n.location ? `${title} · 📍 ${n.location}` : title;
-      const heading = n.source === "gcal" ? "📅 Starting now" : "⏰ Reminder";
+      const heading = n.source === "gcal" ? "📅 Starting now"
+        : n.source === "classroom" ? "🎓 Assignment due" : "⏰ Reminder";
       void showAlert(heading, body, `${n.id}:${n.reminderAt}`);
       this.onFired?.(n);
     }

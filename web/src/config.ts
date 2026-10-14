@@ -39,6 +39,8 @@ export function saveCfg(cfg: Config): void {
 export function clearAll(): void {
   localStorage.removeItem(CFG_KEY);
   localStorage.removeItem(STATE_KEY);
+  localStorage.removeItem("pocketed.v2.calendar");
+  localStorage.removeItem("pocketed.v2.classroom");
 }
 
 export { STATE_KEY };

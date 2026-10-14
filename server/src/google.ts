@@ -11,6 +11,7 @@
 //   app  -> GET /v1/calendar/feed -> { source: "google", calendar, calendars, events }
 
 import {
+  calendarAccountOwns,
   skipGoogleEventForever,
   type GoogleCalendar,
   type GoogleEvent,
@@ -18,23 +19,28 @@ import {
   type GoogleFeed,
 } from "@pocketed/shared";
 import { CalendarInputError, type Fetcher } from "./calendar";
-import type { GoogleAccountRow, Store } from "./store";
+import type { Store } from "./store";
+import {
+  backToGoogleApp,
+  finishGoogleOAuth,
+  googleAccessToken,
+  googleApiGet,
+  googleReadJson,
+  googleProfile,
+  MAX_GOOGLE_CONNECTIONS,
+  googleGrantStillUsed,
+  googleTokenExpiry,
+  GOOGLE_TIMEOUT_MS,
+  revokeGoogleGrant,
+  startGoogleOAuth,
+  type GoogleConfig,
+} from "./google-oauth";
 
-export interface GoogleConfig {
-  clientId: string;
-  clientSecret: string;
-  /** Overrides `${worker origin}/v1/google/callback` (custom domains, proxies). */
-  redirectUri?: string;
-}
+export { normalizeReturnUrl, type GoogleConfig } from "./google-oauth";
 
 export const GOOGLE_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
-const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
+export const GOOGLE_CALENDAR_SCOPES = ["openid", "email", GOOGLE_SCOPE] as const;
 const API = "https://www.googleapis.com/calendar/v3";
-
-const STATE_TTL_MS = 10 * 60_000;
-const TIMEOUT_MS = 15_000;
 const DAY = 86_400_000;
 /** A day more than the app's 60-day window, so its own filter has the final say. */
 const WINDOW_DAYS = 61;
@@ -52,31 +58,6 @@ export function redirectUriFor(cfg: GoogleConfig, reqUrl: URL): string {
   return cfg.redirectUri || `${reqUrl.origin}/v1/google/callback`;
 }
 
-/**
- * Where to send the browser after Google: the app's own page. Only https
- * (or http on this machine, for development), without credentials, query or
- * fragment.
- */
-export function normalizeReturnUrl(raw: unknown): string | null {
-  if (typeof raw !== "string" || raw.length > 2000) return null;
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (u.username || u.password) return null;
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
-  if (!(u.protocol === "https:" || (u.protocol === "http:" && local))) return null;
-  return u.origin + u.pathname;
-}
-
-function randomState(): string {
-  const b = new Uint8Array(24);
-  crypto.getRandomValues(b);
-  return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 /** Step 1: the Google page the app should open. */
 export async function startGoogleSignIn(
   store: Store,
@@ -85,69 +66,7 @@ export async function startGoogleSignIn(
   rawReturnUrl: unknown,
   now: number,
 ): Promise<string> {
-  const returnUrl = normalizeReturnUrl(rawReturnUrl);
-  if (!returnUrl) throw new CalendarInputError("Pocketed's address couldn't be used to come back to.");
-  const state = randomState();
-  await store.putOAuthState(state, returnUrl, now + STATE_TTL_MS, now);
-  const q = new URLSearchParams({
-    client_id: cfg.clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: GOOGLE_SCOPE,
-    access_type: "offline", // a refresh token, so imports keep working
-    prompt: "consent", // …issued again on every sign-in
-    include_granted_scopes: "false",
-    state,
-  });
-  return `${AUTH_URL}?${q}`;
-}
-
-function redirect(to: string): Response {
-  return new Response(null, { status: 302, headers: { location: to, "cache-control": "no-store" } });
-}
-
-function backToApp(returnUrl: string, error?: string): Response {
-  return redirect(
-    error
-      ? `${returnUrl}#google=error&message=${encodeURIComponent(error)}`
-      : `${returnUrl}#google=connected`,
-  );
-}
-
-function plainPage(message: string, status: number): Response {
-  const html =
-    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">` +
-    `<title>Pocketed</title><body style="font-family:system-ui;padding:2rem;max-width:32rem">` +
-    `<h1 style="font-size:1.2rem">Pocketed</h1><p>${message}</p></body>`;
-  return new Response(html, {
-    status,
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
-  });
-}
-
-interface TokenResponse {
-  access_token?: string;
-  expires_in?: number;
-  refresh_token?: string;
-  scope?: string;
-  error?: string;
-}
-
-async function postForm(fetcher: Fetcher, url: string, form: Record<string, string>) {
-  return fetcher(url, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(form).toString(),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-}
-
-async function readJson<T>(res: Response): Promise<T | null> {
-  try {
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+  return startGoogleOAuth(store, cfg, redirectUri, rawReturnUrl, now, "calendar", GOOGLE_CALENDAR_SCOPES);
 }
 
 /** Step 2: Google sends the browser back here. Always answers with a page or redirect. */
@@ -159,166 +78,84 @@ export async function finishGoogleSignIn(
   now: number,
   fetcher: Fetcher,
 ): Promise<Response> {
-  const state = params.get("state") ?? "";
-  const returnUrl = state ? await store.takeOAuthState(state, now) : null;
-  if (!returnUrl) {
-    return plainPage(
-      "This sign-in link has expired or was already used. Go back to Pocketed and choose " +
-        "“Sign in with Google” again.",
-      400,
-    );
-  }
-  if (params.get("error")) {
-    return backToApp(
-      returnUrl,
-      params.get("error") === "access_denied"
-        ? "Google sign-in was cancelled."
-        : `Google sign-in failed (${params.get("error")}).`,
-    );
-  }
-  const code = params.get("code");
-  if (!code) return backToApp(returnUrl, "Google didn't send a sign-in code. Try again.");
+  const result = await finishGoogleOAuth(
+    store, cfg, redirectUri, params, now, fetcher, "calendar",
+    [["openid"], ["email", "https://www.googleapis.com/auth/userinfo.email"], [GOOGLE_SCOPE, "https://www.googleapis.com/auth/calendar"]],
+    "Pocketed needs permission to see your calendar — tick that box when Google asks.",
+  );
+  if (result instanceof Response) return result;
+  const { returnUrl, tokens: tok } = result;
 
-  let tok: TokenResponse | null = null;
-  try {
-    const res = await postForm(fetcher, TOKEN_URL, {
-      code,
-      client_id: cfg.clientId,
-      client_secret: cfg.clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-    });
-    tok = await readJson<TokenResponse>(res);
-    if (!res.ok) tok = { error: tok?.error ?? `HTTP ${res.status}` };
-  } catch {
-    return backToApp(returnUrl, "Couldn't reach Google. Try again in a minute.");
-  }
-  if (!tok || tok.error || !tok.access_token) {
-    return backToApp(
-      returnUrl,
-      `Google didn't accept the sign-in (${tok?.error ?? "no token"}). Check the server's Google settings.`,
-    );
-  }
-  const scopes = (tok.scope ?? "").split(/\s+/);
-  if (!scopes.includes(GOOGLE_SCOPE) && !scopes.includes("https://www.googleapis.com/auth/calendar")) {
-    return backToApp(
-      returnUrl,
-      "Pocketed needs permission to see your calendar — tick that box when Google asks.",
-    );
-  }
-  if (!tok.refresh_token) {
-    return backToApp(returnUrl, "Google didn't allow ongoing access. Try signing in again.");
-  }
+  let profile: Awaited<ReturnType<typeof googleProfile>>;
+  try { profile = await googleProfile(fetcher, tok.access_token); }
+  catch { return backToGoogleApp(returnUrl, "calendar", "Couldn't identify your Google account. Try signing in again."); }
 
-  // The primary calendar's id is the account's address — shown in Settings.
-  let email: string | null = null;
+  // Also check that the Calendar API is available before storing a new connection.
+  let email: string | null = profile.email;
   try {
     const res = await fetcher(`${API}/users/me/calendarList/primary?fields=id`, {
       headers: { authorization: `Bearer ${tok.access_token}` },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS),
     });
     if (res.status === 403) {
-      return backToApp(
-        returnUrl,
+      return backToGoogleApp(
+        returnUrl, "calendar",
         "Google refused calendar access — is the Google Calendar API enabled in the Google Cloud project?",
       );
     }
-    if (res.ok) email = (await readJson<{ id?: string }>(res))?.id ?? null;
+    if (res.ok && !email) email = (await googleReadJson<{ id?: string }>(res))?.id ?? null;
   } catch {
     /* not essential */
   }
 
-  const old = await store.getGoogle();
-  if (old && old.refreshToken !== tok.refresh_token) await revoke(fetcher, old.refreshToken);
+  // Revoking an old refresh token can revoke this new one and Classroom's
+  // grant too. Forget the superseded token without revoking the whole grant.
+  const accounts = await store.listGoogle();
+  const existing = accounts.find((r) => r.accountId === profile.sub) ??
+    accounts.find((r) => !r.accountId && !!email && r.email?.toLowerCase() === email.toLowerCase());
+  if (!existing && accounts.length >= MAX_GOOGLE_CONNECTIONS) {
+    return backToGoogleApp(returnUrl, "calendar", `You can connect up to ${MAX_GOOGLE_CONNECTIONS} Calendar accounts. Disconnect one before adding another.`);
+  }
+  const id = existing?.id ?? `google:${profile.sub}`;
   await store.setGoogle({
+    id, accountId: profile.sub,
+    legacyIds: existing?.legacyIds ?? !!(await store.getCalendar()),
+    visible: existing?.visible ?? true,
     refreshToken: tok.refresh_token,
     accessToken: tok.access_token,
-    accessExpires: now + Math.max(60, tok.expires_in ?? 3600) * 1000,
+    accessExpires: googleTokenExpiry(now, tok.expires_in),
     email,
-    connectedAt: now,
+    connectedAt: Math.max(now, (existing?.connectedAt ?? 0) + 1),
     problem: null,
   });
   // One calendar source at a time: signing in replaces a secret link.
   await store.setCalendar(null);
-  return backToApp(returnUrl);
+  return backToGoogleApp(returnUrl, "calendar", undefined, id);
 }
 
-async function revoke(fetcher: Fetcher, token: string): Promise<void> {
-  try {
-    await postForm(fetcher, REVOKE_URL, { token });
-  } catch {
-    /* best effort */
+/** Forget only the chosen Calendar connection; Classroom and other accounts stay. */
+export async function disconnectGoogle(store: Store, fetcher: Fetcher, id?: string, now = Date.now()): Promise<number> {
+  const rows = id === undefined ? await store.listGoogle() : [await store.getGoogle(id)].filter((r) => r !== null);
+  let removed = 0;
+  for (const row of rows) {
+    // Remove credentials before cleanup, so a late feed fails its identity check.
+    await store.removeGoogle(row.id);
+    for (const note of await store.allNotes()) {
+      if (!calendarAccountOwns(note, { accountId: row.id, legacyIds: row.legacyIds }) || note.deleted) continue;
+      await store.appendOp({ id: crypto.randomUUID(), kind: "delete", noteId: note.id, updatedAt: Math.max(now, note.updatedAt),
+        source: "gcal", sourceRef: "calendar-removed", sourceAccountId: row.id });
+      removed++;
+    }
+    if (!(await googleGrantStillUsed(store, row.accountId))) {
+      await revokeGoogleGrant(fetcher, row.refreshToken);
+    }
   }
-}
-
-/** Forgets the Google connection and tells Google to drop Pocketed's access. */
-export async function disconnectGoogle(store: Store, fetcher: Fetcher): Promise<void> {
-  const row = await store.getGoogle();
-  if (!row) return;
-  await store.setGoogle(null);
-  await revoke(fetcher, row.refreshToken);
+  return removed;
 }
 
 const SIGN_IN_AGAIN =
   "Google no longer accepts Pocketed's sign-in (it may have been removed or expired). " +
   "Sign in with Google again in Settings.";
-
-async function accessToken(
-  store: Store,
-  row: GoogleAccountRow,
-  cfg: GoogleConfig,
-  now: number,
-  fetcher: Fetcher,
-  force: boolean,
-): Promise<string> {
-  if (!force && row.accessToken && row.accessExpires && row.accessExpires > now + 60_000) {
-    return row.accessToken;
-  }
-  let res: Response;
-  try {
-    res = await postForm(fetcher, TOKEN_URL, {
-      client_id: cfg.clientId,
-      client_secret: cfg.clientSecret,
-      refresh_token: row.refreshToken,
-      grant_type: "refresh_token",
-    });
-  } catch {
-    throw new CalendarInputError("Couldn't reach Google. Try again in a minute.", 502);
-  }
-  const tok = await readJson<TokenResponse>(res);
-  if (!res.ok || !tok?.access_token) {
-    if (tok?.error === "invalid_grant") {
-      await store.setGoogle({ ...row, accessToken: null, accessExpires: null, problem: SIGN_IN_AGAIN });
-      throw new CalendarInputError(SIGN_IN_AGAIN, 502);
-    }
-    throw new CalendarInputError(
-      `Google sign-in check failed (${tok?.error ?? res.status}). Check the server's Google settings.`,
-      502,
-    );
-  }
-  const next: GoogleAccountRow = {
-    ...row,
-    accessToken: tok.access_token,
-    accessExpires: now + Math.max(60, tok.expires_in ?? 3600) * 1000,
-    problem: null,
-  };
-  await store.setGoogle(next);
-  Object.assign(row, next);
-  return tok.access_token;
-}
-
-async function apiGet<T>(fetcher: Fetcher, url: string, token: string): Promise<{ status: number; body: T | null }> {
-  let res: Response;
-  try {
-    res = await fetcher(url, {
-      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-  } catch {
-    throw new CalendarInputError("Couldn't reach Google Calendar. Try again in a minute.", 502);
-  }
-  return { status: res.status, body: res.ok ? await readJson<T>(res) : null };
-}
 
 /** Upcoming events from every readable calendar on the account, with colours. */
 export async function googleFeed(
@@ -326,20 +163,21 @@ export async function googleFeed(
   cfg: GoogleConfig,
   now: number,
   fetcher: Fetcher,
+  accountId?: string,
 ): Promise<GoogleFeed> {
-  const row = await store.getGoogle();
+  const row = await store.getGoogle(accountId);
   if (!row) throw new CalendarInputError("No calendar connected.", 409);
 
-  let token = await accessToken(store, row, cfg, now, fetcher, false);
+  let token = await googleAccessToken(row, cfg, now, fetcher, (r) => store.updateGoogleTokens(r), SIGN_IN_AGAIN);
   let refreshing: Promise<string> | null = null;
   // GET with one retry on 401 (a token revoked/rotated early).
   const get = async <T>(url: string): Promise<T> => {
     for (let attempt = 0; ; attempt++) {
       const used = token;
-      const r = await apiGet<T>(fetcher, url, used);
+      const r = await googleApiGet<T>(fetcher, url, used, "Calendar");
       if (r.status === 401 && attempt === 0) {
         if (token === used) {
-          refreshing ??= accessToken(store, row, cfg, now, fetcher, true);
+          refreshing ??= googleAccessToken(row, cfg, now, fetcher, (r) => store.updateGoogleTokens(r), SIGN_IN_AGAIN, true);
           token = await refreshing;
         }
         continue;
@@ -475,9 +313,17 @@ export async function googleFeed(
     });
   }
 
+  // Another device may disconnect or reconnect this account while Google responds.
+  const current = await store.getGoogle(row.id);
+  if (!current) throw new CalendarInputError("No calendar connected.", 409);
+  if (current.refreshToken !== row.refreshToken || current.connectedAt !== row.connectedAt) {
+    throw new CalendarInputError("The Calendar connection changed while checking. Existing reminders were kept; check again.", 502);
+  }
   const primary = allCalendars.find((cal) => cal.primary);
   return {
     source: "google",
+    accountId: row.id,
+    legacyIds: row.legacyIds,
     calendar: { colorId: primary?.colorId, backgroundColor: primary?.backgroundColor },
     calendars: allCalendars,
     events,

@@ -3,6 +3,7 @@
 //  - MemoryStore: tests
 
 import type {
+  CalendarAccountSummary,
   ChecklistItem,
   ItemKind,
   ItemSource,
@@ -26,19 +27,45 @@ export interface CalendarFeedRow {
   connectedAt: number;
 }
 
-/** "Sign in with Google" connection (one per Pocketed account). */
-export interface GoogleAccountRow {
+/** Server-only OAuth credentials, shared in shape but stored per integration. */
+export interface GoogleOAuthRow {
   /** Long-lived; never sent back to the apps. */
   refreshToken: string;
   accessToken: string | null;
   /** Epoch ms when accessToken stops working. */
   accessExpires: number | null;
-  /** Primary calendar id (the Google account's address), for display. */
-  email: string | null;
   connectedAt: number;
   /** Set when Google stopped accepting the refresh token (sign in again). */
   problem: string | null;
 }
+
+/** One of the Google Calendar connections in this Pocketed workspace. */
+export interface GoogleAccountRow extends GoogleOAuthRow {
+  id?: string;
+  /** OIDC subject, absent on the migrated pre-multi-account connection. */
+  accountId?: string | null;
+  legacyIds?: boolean;
+  visible?: boolean;
+  /** Primary calendar id (the Google account's address), for display. */
+  email: string | null;
+}
+
+export interface GoogleConnectionRow extends GoogleAccountRow {
+  id: string;
+  accountId: string | null;
+  legacyIds: boolean;
+  visible: boolean;
+}
+
+/** Classroom remains independent, even for the same Google account. */
+export interface ClassroomAccountRow extends GoogleOAuthRow {
+  /** Ownership fallback for reminders created before account tags existed. */
+  legacyNotes?: boolean;
+  accountId: string;
+  email: string | null;
+}
+
+export type OAuthPurpose = "calendar" | "classroom";
 
 interface StoredMeta {
   itemKind?: ItemKind;
@@ -58,9 +85,10 @@ interface StoredMeta {
   allDay?: boolean | null;
   source?: ItemSource | null;
   sourceRef?: string | null;
+  sourceAccountId?: string | null;
 }
 
-function encodeMeta(op: Op): string | null {
+function encodeMeta(op: Partial<Op>): string | null {
   const m: StoredMeta = {};
   if (op.itemKind !== undefined) m.itemKind = op.itemKind;
   if (op.title !== undefined) m.title = op.title;
@@ -79,6 +107,7 @@ function encodeMeta(op: Op): string | null {
   if (op.allDay !== undefined) m.allDay = op.allDay;
   if (op.source !== undefined) m.source = op.source;
   if (op.sourceRef !== undefined) m.sourceRef = op.sourceRef;
+  if (op.sourceAccountId !== undefined) m.sourceAccountId = op.sourceAccountId;
   return Object.keys(m).length > 0 ? JSON.stringify(m) : null;
 }
 
@@ -108,13 +137,25 @@ export interface Store {
   /** null disconnects. */
   setCalendar(row: CalendarFeedRow | null): Promise<void>;
   // ---- Sign in with Google ----
-  getGoogle(): Promise<GoogleAccountRow | null>;
+  getGoogle(id?: string): Promise<GoogleConnectionRow | null>;
+  listGoogle(): Promise<GoogleConnectionRow[]>;
+  getGoogleState(): Promise<{ accounts: CalendarAccountSummary[]; revision: number }>;
+  removeGoogle(id: string): Promise<void>;
+  setGoogleVisibility(id: string, visible: boolean): Promise<boolean>;
   /** null disconnects. */
   setGoogle(row: GoogleAccountRow | null): Promise<void>;
-  /** Remembers a one-time sign-in attempt (and drops expired ones). */
-  putOAuthState(state: string, returnUrl: string, expires: number, now: number): Promise<void>;
-  /** Uses up a sign-in attempt: its return URL if it exists and hasn't expired. */
-  takeOAuthState(state: string, now: number): Promise<string | null>;
+  /** Refresh only the existing connection; never resurrect a disconnected/replaced row. */
+  updateGoogleTokens(row: GoogleAccountRow): Promise<boolean>;
+  // ---- Google Classroom (does not replace the Calendar connection) ----
+  getClassroom(accountId?: string): Promise<ClassroomAccountRow | null>;
+  listClassroom(): Promise<ClassroomAccountRow[]>;
+  removeClassroom(accountId: string): Promise<void>;
+  setClassroom(row: ClassroomAccountRow | null): Promise<void>;
+  updateClassroomTokens(row: ClassroomAccountRow): Promise<boolean>;
+  /** Remembers a one-time sign-in attempt, bound to the intended integration. */
+  putOAuthState(state: string, returnUrl: string, expires: number, now: number, purpose?: OAuthPurpose): Promise<void>;
+  /** Uses up an unexpired attempt for THIS integration only. */
+  takeOAuthState(state: string, now: number, purpose?: OAuthPurpose): Promise<string | null>;
 }
 
 export const SCHEMA = `
@@ -166,10 +207,48 @@ CREATE TABLE IF NOT EXISTS google_account (
   connectedAt INTEGER NOT NULL,
   problem TEXT
 );
+CREATE TABLE IF NOT EXISTS classroom_account (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  refreshToken TEXT NOT NULL,
+  accessToken TEXT,
+  accessExpires INTEGER,
+  accountId TEXT NOT NULL,
+  email TEXT,
+  connectedAt INTEGER NOT NULL,
+  problem TEXT
+);
+CREATE TABLE IF NOT EXISTS google_connection_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO google_connection_state (id, revision) VALUES (1, 0);
+CREATE TABLE IF NOT EXISTS google_connection (
+  id TEXT PRIMARY KEY,
+  accountId TEXT UNIQUE,
+  refreshToken TEXT NOT NULL,
+  accessToken TEXT,
+  accessExpires INTEGER,
+  email TEXT,
+  connectedAt INTEGER NOT NULL,
+  problem TEXT,
+  legacyIds INTEGER NOT NULL DEFAULT 0,
+  visible INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS classroom_connection (
+  accountId TEXT PRIMARY KEY,
+  refreshToken TEXT NOT NULL,
+  accessToken TEXT,
+  accessExpires INTEGER,
+  email TEXT,
+  connectedAt INTEGER NOT NULL,
+  problem TEXT,
+  legacyNotes INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS oauth_state (
   state TEXT PRIMARY KEY,
   returnUrl TEXT NOT NULL,
-  expires INTEGER NOT NULL
+  expires INTEGER NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'calendar'
 );
 `;
 
@@ -199,6 +278,7 @@ function rowToNote(r: NoteRow): Note {
     allDay: m.allDay ?? null,
     source: m.source ?? null,
     sourceRef: m.sourceRef ?? null,
+    sourceAccountId: m.sourceAccountId ?? null,
     deleted: (r.deleted as number) === 1,
   };
 }
@@ -216,6 +296,8 @@ export class D1Store implements Store {
       "ALTER TABLE note ADD COLUMN meta TEXT",
       // Subsections: databases created before sections could nest.
       "ALTER TABLE section ADD COLUMN parentId TEXT",
+      // Existing Calendar sign-in attempts keep their purpose on upgrade.
+      "ALTER TABLE oauth_state ADD COLUMN purpose TEXT NOT NULL DEFAULT 'calendar'",
     ]) {
       try {
         await this.db.prepare(alter).run();
@@ -223,6 +305,21 @@ export class D1Store implements Store {
         /* Column already exists */
       }
     }
+    // Atomically move the old singleton credentials once. Emptying the old
+    // tables prevents a later Worker cold start from resurrecting disconnects.
+    await this.db.batch([
+      this.db.prepare(`INSERT OR IGNORE INTO google_connection
+        (id, accountId, refreshToken, accessToken, accessExpires, email, connectedAt, problem, legacyIds, visible)
+        SELECT 'google:legacy', NULL, refreshToken, accessToken, accessExpires, email, connectedAt, problem, 1, 1
+        FROM google_account WHERE id = 1`),
+      this.db.prepare(`UPDATE google_connection_state SET revision = revision + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM google_account WHERE id = 1)`),
+      this.db.prepare(`DELETE FROM google_account`),
+      this.db.prepare(`INSERT OR IGNORE INTO classroom_connection
+        (accountId, refreshToken, accessToken, accessExpires, email, connectedAt, problem, legacyNotes)
+        SELECT accountId, refreshToken, accessToken, accessExpires, email, connectedAt, problem, 1
+        FROM classroom_account WHERE id = 1`),
+      this.db.prepare(`DELETE FROM classroom_account`),
+    ]);
   }
 
   async noteCount(): Promise<number> {
@@ -240,7 +337,7 @@ export class D1Store implements Store {
   }
 
   async appendOp(op: Op): Promise<void> {
-    const metaJson = encodeMeta(op);
+    const metaJson = encodeMeta(op.kind === "delete" ? { source: op.source, sourceRef: op.sourceRef, sourceAccountId: op.sourceAccountId } : op);
     const res = await this.db
       .prepare(
         `INSERT OR IGNORE INTO op (id, kind, noteId, text, reminderAt, createdAt, updatedAt, meta)
@@ -303,13 +400,14 @@ export class D1Store implements Store {
       await this.db
         .prepare(
           `INSERT INTO note (id, text, createdAt, updatedAt, reminderAt, deleted, meta)
-           VALUES (?, '', ?, ?, NULL, 1, NULL)
+           VALUES (?1, '', ?2, ?3, NULL, 1, ?4)
            ON CONFLICT(id) DO UPDATE SET
              deleted = 1, reminderAt = NULL,
+             meta = CASE WHEN ?4 IS NULL THEN note.meta ELSE json_patch(coalesce(note.meta, '{}'), ?4) END,
              updatedAt = excluded.updatedAt
            WHERE excluded.updatedAt >= note.updatedAt`,
         )
-        .bind(op.noteId, op.updatedAt, op.updatedAt)
+        .bind(op.noteId, op.updatedAt, op.updatedAt, metaJson)
         .run();
     } else {
       await this.db
@@ -319,7 +417,7 @@ export class D1Store implements Store {
            ON CONFLICT(id) DO UPDATE SET
              text = excluded.text,
              reminderAt = excluded.reminderAt,
-             meta = excluded.meta,
+             meta = json_patch(coalesce(note.meta, '{}'), coalesce(excluded.meta, '{}')),
              deleted = 0,
              updatedAt = excluded.updatedAt
            WHERE excluded.updatedAt >= note.updatedAt`,
@@ -427,53 +525,128 @@ export class D1Store implements Store {
       .run();
   }
 
-  async getGoogle(): Promise<GoogleAccountRow | null> {
-    const r = await this.db
-      .prepare(
-        `SELECT refreshToken, accessToken, accessExpires, email, connectedAt, problem
-         FROM google_account WHERE id = 1`,
-      )
-      .first<GoogleAccountRow>();
-    return r ?? null;
+  async listGoogle(): Promise<GoogleConnectionRow[]> {
+    const rows = await this.db.prepare(`SELECT * FROM google_connection ORDER BY legacyIds DESC, connectedAt, id`).all();
+    return rows.results.map((r) => ({
+      id: r.id as string, accountId: (r.accountId as string | null) ?? null,
+      refreshToken: r.refreshToken as string, accessToken: (r.accessToken as string | null) ?? null,
+      accessExpires: (r.accessExpires as number | null) ?? null, email: (r.email as string | null) ?? null,
+      connectedAt: r.connectedAt as number, problem: (r.problem as string | null) ?? null,
+      legacyIds: r.legacyIds === 1, visible: r.visible === 1,
+    }));
+  }
+
+  async getGoogle(id?: string): Promise<GoogleConnectionRow | null> {
+    const rows = await this.listGoogle();
+    return (id === undefined ? rows[0] : rows.find((r) => r.id === id)) ?? null;
+  }
+
+  async getGoogleState(): Promise<{ accounts: CalendarAccountSummary[]; revision: number }> {
+    // A single statement gives visibility and its revision the same snapshot.
+    const rows = await this.db.prepare(`SELECT s.revision, g.id, g.email, g.connectedAt, g.problem, g.visible, g.legacyIds
+      FROM google_connection_state s LEFT JOIN google_connection g ON 1 = 1 WHERE s.id = 1
+      ORDER BY g.legacyIds DESC, g.connectedAt, g.id`).all();
+    return { revision: Number(rows.results[0]?.revision ?? 0), accounts: rows.results.filter((r) => r.id != null).map((r) => ({
+      id: r.id as string, email: (r.email as string | null) ?? null, connectedAt: r.connectedAt as number,
+      problem: (r.problem as string | null) ?? null, visible: r.visible === 1, legacyIds: r.legacyIds === 1,
+    })) };
   }
 
   async setGoogle(row: GoogleAccountRow | null): Promise<void> {
     if (!row) {
-      await this.db.prepare(`DELETE FROM google_account`).run();
+      await this.db.batch([this.db.prepare(`DELETE FROM google_connection`), this.db.prepare(`UPDATE google_connection_state SET revision = revision + 1 WHERE id = 1`)]);
       return;
     }
-    await this.db
-      .prepare(
-        `INSERT INTO google_account (id, refreshToken, accessToken, accessExpires, email, connectedAt, problem)
-         VALUES (1, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET refreshToken = excluded.refreshToken,
+    await this.db.batch([
+      this.db.prepare(
+        `INSERT INTO google_connection (id, accountId, refreshToken, accessToken, accessExpires, email, connectedAt, problem, legacyIds, visible)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET accountId = excluded.accountId, refreshToken = excluded.refreshToken,
            accessToken = excluded.accessToken, accessExpires = excluded.accessExpires,
-           email = excluded.email, connectedAt = excluded.connectedAt, problem = excluded.problem`,
-      )
-      .bind(
-        row.refreshToken,
-        row.accessToken,
-        row.accessExpires,
-        row.email,
-        row.connectedAt,
-        row.problem,
-      )
-      .run();
+           email = excluded.email, connectedAt = excluded.connectedAt, problem = excluded.problem,
+           legacyIds = excluded.legacyIds`,
+      ).bind(row.id ?? "google:legacy", row.accountId ?? null, row.refreshToken, row.accessToken,
+        row.accessExpires, row.email, row.connectedAt, row.problem, (row.legacyIds ?? !row.id) ? 1 : 0, row.visible === false ? 0 : 1),
+      this.db.prepare(`UPDATE google_connection_state SET revision = revision + 1 WHERE id = 1`),
+    ]);
+    // Reauthorization deliberately does not reset an existing visibility choice.
   }
 
-  async putOAuthState(state: string, returnUrl: string, expires: number, now: number): Promise<void> {
+  async removeGoogle(id: string): Promise<void> {
     await this.db.batch([
-      this.db.prepare(`DELETE FROM oauth_state WHERE expires < ?`).bind(now),
-      this.db
-        .prepare(`INSERT INTO oauth_state (state, returnUrl, expires) VALUES (?, ?, ?)`)
-        .bind(state, returnUrl, expires),
+      this.db.prepare(`DELETE FROM google_connection WHERE id = ?`).bind(id),
+      this.db.prepare(`UPDATE google_connection_state SET revision = revision + 1 WHERE id = 1`),
     ]);
   }
 
-  async takeOAuthState(state: string, now: number): Promise<string | null> {
+  async setGoogleVisibility(id: string, visible: boolean): Promise<boolean> {
+    const result = await this.db.batch([
+      this.db.prepare(`UPDATE google_connection SET visible = ? WHERE id = ?`).bind(visible ? 1 : 0, id),
+      this.db.prepare(`UPDATE google_connection_state SET revision = revision + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM google_connection WHERE id = ?)`).bind(id),
+    ]);
+    return (result[0].meta.changes ?? 0) > 0;
+  }
+
+  async updateGoogleTokens(row: GoogleAccountRow): Promise<boolean> {
+    const result = await this.db.prepare(
+      `UPDATE google_connection SET accessToken = ?, accessExpires = ?, problem = ?
+       WHERE id = ? AND refreshToken = ? AND connectedAt = ?`,
+    ).bind(row.accessToken, row.accessExpires, row.problem, row.id ?? "google:legacy", row.refreshToken, row.connectedAt).run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  async listClassroom(): Promise<ClassroomAccountRow[]> {
+    const rows = await this.db.prepare(`SELECT * FROM classroom_connection ORDER BY legacyNotes DESC, connectedAt, accountId`).all();
+    return rows.results.map((r) => ({
+      accountId: r.accountId as string, refreshToken: r.refreshToken as string,
+      accessToken: (r.accessToken as string | null) ?? null, accessExpires: (r.accessExpires as number | null) ?? null,
+      email: (r.email as string | null) ?? null, connectedAt: r.connectedAt as number,
+      problem: (r.problem as string | null) ?? null, legacyNotes: r.legacyNotes === 1,
+    }));
+  }
+
+  async getClassroom(accountId?: string): Promise<ClassroomAccountRow | null> {
+    const rows = await this.listClassroom();
+    return (accountId === undefined ? rows[0] : rows.find((r) => r.accountId === accountId)) ?? null;
+  }
+
+  async setClassroom(row: ClassroomAccountRow | null): Promise<void> {
+    if (!row) { await this.db.prepare(`DELETE FROM classroom_connection`).run(); return; }
+    await this.db.prepare(
+      `INSERT INTO classroom_connection (accountId, refreshToken, accessToken, accessExpires, email, connectedAt, problem, legacyNotes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(accountId) DO UPDATE SET refreshToken = excluded.refreshToken,
+         accessToken = excluded.accessToken, accessExpires = excluded.accessExpires,
+         email = excluded.email, connectedAt = excluded.connectedAt, problem = excluded.problem`,
+    ).bind(row.accountId, row.refreshToken, row.accessToken, row.accessExpires, row.email, row.connectedAt, row.problem,
+      row.legacyNotes ? 1 : 0).run();
+  }
+
+  async removeClassroom(accountId: string): Promise<void> {
+    await this.db.prepare(`DELETE FROM classroom_connection WHERE accountId = ?`).bind(accountId).run();
+  }
+
+  async updateClassroomTokens(row: ClassroomAccountRow): Promise<boolean> {
+    const result = await this.db.prepare(
+      `UPDATE classroom_connection SET accessToken = ?, accessExpires = ?, problem = ?
+       WHERE accountId = ? AND refreshToken = ? AND connectedAt = ?`,
+    ).bind(row.accessToken, row.accessExpires, row.problem, row.accountId, row.refreshToken, row.connectedAt).run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  async putOAuthState(state: string, returnUrl: string, expires: number, now: number, purpose: OAuthPurpose = "calendar"): Promise<void> {
+    await this.db.batch([
+      this.db.prepare(`DELETE FROM oauth_state WHERE expires < ?`).bind(now),
+      this.db
+        .prepare(`INSERT INTO oauth_state (state, returnUrl, expires, purpose) VALUES (?, ?, ?, ?)`)
+        .bind(state, returnUrl, expires, purpose),
+    ]);
+  }
+
+  async takeOAuthState(state: string, now: number, purpose: OAuthPurpose = "calendar"): Promise<string | null> {
     const r = await this.db
-      .prepare(`DELETE FROM oauth_state WHERE state = ? RETURNING returnUrl, expires`)
-      .bind(state)
+      .prepare(`DELETE FROM oauth_state WHERE state = ? AND purpose = ? RETURNING returnUrl, expires`)
+      .bind(state, purpose)
       .first<{ returnUrl: string; expires: number }>();
     return r && r.expires >= now ? r.returnUrl : null;
   }
@@ -485,8 +658,12 @@ export class MemoryStore implements Store {
   sections = new Map<string, Section>();
   auth: AuthRow | null = null;
   calendar: CalendarFeedRow | null = null;
-  google: GoogleAccountRow | null = null;
-  oauthStates = new Map<string, { returnUrl: string; expires: number }>();
+  googleRevision = 0;
+  googleAccounts = new Map<string, GoogleConnectionRow>();
+  classroomAccounts = new Map<string, ClassroomAccountRow>();
+  get google(): GoogleConnectionRow | null { return [...this.googleAccounts.values()][0] ?? null; }
+  get classroom(): ClassroomAccountRow | null { return [...this.classroomAccounts.values()][0] ?? null; }
+  oauthStates = new Map<string, { returnUrl: string; expires: number; purpose: OAuthPurpose }>();
   private seq = 0;
 
   async init(): Promise<void> {}
@@ -555,6 +732,10 @@ export class MemoryStore implements Store {
           ...base,
           deleted: true,
           reminderAt: null,
+          repeat: null,
+          source: op.source !== undefined ? op.source : (base.source ?? null),
+          sourceRef: op.sourceRef !== undefined ? op.sourceRef : (base.sourceRef ?? null),
+          sourceAccountId: op.sourceAccountId !== undefined ? op.sourceAccountId : (base.sourceAccountId ?? null),
           updatedAt: Math.max(cur?.updatedAt ?? 0, op.updatedAt),
         });
       }
@@ -589,6 +770,7 @@ export class MemoryStore implements Store {
         allDay: op.allDay !== undefined ? op.allDay : (cur?.allDay ?? null),
         source: op.source !== undefined ? op.source : (cur?.source ?? null),
         sourceRef: op.sourceRef !== undefined ? op.sourceRef : (cur?.sourceRef ?? null),
+        sourceAccountId: op.sourceAccountId !== undefined ? op.sourceAccountId : (cur?.sourceAccountId ?? null),
         deleted: false,
       });
     }
@@ -618,22 +800,82 @@ export class MemoryStore implements Store {
     this.calendar = row;
   }
 
-  async getGoogle(): Promise<GoogleAccountRow | null> {
-    return this.google ? { ...this.google } : null;
+  async listGoogle(): Promise<GoogleConnectionRow[]> {
+    return [...this.googleAccounts.values()].sort((a, b) => Number(b.legacyIds) - Number(a.legacyIds) || a.connectedAt - b.connectedAt || a.id.localeCompare(b.id)).map((r) => ({ ...r }));
+  }
+
+  async getGoogle(id?: string): Promise<GoogleConnectionRow | null> {
+    const row = id === undefined ? (await this.listGoogle())[0] : this.googleAccounts.get(id);
+    return row ? { ...row } : null;
+  }
+
+  async getGoogleState(): Promise<{ accounts: CalendarAccountSummary[]; revision: number }> {
+    const revision = this.googleRevision;
+    return { revision, accounts: (await this.listGoogle()).map((r) => ({
+      id: r.id, email: r.email, connectedAt: r.connectedAt, problem: r.problem, visible: r.visible, legacyIds: r.legacyIds,
+    })) };
   }
 
   async setGoogle(row: GoogleAccountRow | null): Promise<void> {
-    this.google = row ? { ...row } : null;
+    this.googleRevision++;
+    if (!row) { this.googleAccounts.clear(); return; }
+    const id = row.id ?? "google:legacy";
+    const old = this.googleAccounts.get(id);
+    this.googleAccounts.set(id, { ...row, id, accountId: row.accountId ?? null, legacyIds: row.legacyIds ?? !row.id,
+      visible: old?.visible ?? row.visible ?? true });
   }
 
-  async putOAuthState(state: string, returnUrl: string, expires: number, now: number): Promise<void> {
+  async removeGoogle(id: string): Promise<void> { this.googleAccounts.delete(id); this.googleRevision++; }
+
+  async setGoogleVisibility(id: string, visible: boolean): Promise<boolean> {
+    const row = this.googleAccounts.get(id);
+    if (!row) return false;
+    this.googleAccounts.set(id, { ...row, visible });
+    this.googleRevision++;
+    return true;
+  }
+
+  async updateGoogleTokens(row: GoogleAccountRow): Promise<boolean> {
+    const id = row.id ?? "google:legacy";
+    const old = this.googleAccounts.get(id);
+    if (!old || old.refreshToken !== row.refreshToken || old.connectedAt !== row.connectedAt) return false;
+    this.googleAccounts.set(id, { ...old, accessToken: row.accessToken, accessExpires: row.accessExpires, problem: row.problem });
+    return true;
+  }
+
+  async listClassroom(): Promise<ClassroomAccountRow[]> {
+    return [...this.classroomAccounts.values()].sort((a, b) => Number(b.legacyNotes) - Number(a.legacyNotes) || a.connectedAt - b.connectedAt || a.accountId.localeCompare(b.accountId)).map((r) => ({ ...r }));
+  }
+
+  async getClassroom(accountId?: string): Promise<ClassroomAccountRow | null> {
+    const row = accountId === undefined ? (await this.listClassroom())[0] : this.classroomAccounts.get(accountId);
+    return row ? { ...row } : null;
+  }
+
+  async setClassroom(row: ClassroomAccountRow | null): Promise<void> {
+    if (!row) { this.classroomAccounts.clear(); return; }
+    const old = this.classroomAccounts.get(row.accountId);
+    this.classroomAccounts.set(row.accountId, { ...row, legacyNotes: old?.legacyNotes ?? row.legacyNotes ?? false });
+  }
+
+  async removeClassroom(accountId: string): Promise<void> { this.classroomAccounts.delete(accountId); }
+
+  async updateClassroomTokens(row: ClassroomAccountRow): Promise<boolean> {
+    const old = this.classroomAccounts.get(row.accountId);
+    if (!old || old.refreshToken !== row.refreshToken || old.connectedAt !== row.connectedAt) return false;
+    this.classroomAccounts.set(row.accountId, { ...old, accessToken: row.accessToken, accessExpires: row.accessExpires, problem: row.problem });
+    return true;
+  }
+
+  async putOAuthState(state: string, returnUrl: string, expires: number, now: number, purpose: OAuthPurpose = "calendar"): Promise<void> {
     for (const [k, v] of this.oauthStates) if (v.expires < now) this.oauthStates.delete(k);
-    this.oauthStates.set(state, { returnUrl, expires });
+    this.oauthStates.set(state, { returnUrl, expires, purpose });
   }
 
-  async takeOAuthState(state: string, now: number): Promise<string | null> {
+  async takeOAuthState(state: string, now: number, purpose: OAuthPurpose = "calendar"): Promise<string | null> {
     const r = this.oauthStates.get(state);
+    if (!r || r.purpose !== purpose) return null;
     this.oauthStates.delete(state);
-    return r && r.expires >= now ? r.returnUrl : null;
+    return r.expires >= now ? r.returnUrl : null;
   }
 }

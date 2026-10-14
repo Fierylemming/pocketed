@@ -22,9 +22,9 @@ Nothing reaches your live site until a change is merged to `main`.
 
 ```
 packages/shared   sync engine, reminders, calendar import rules, auth (pure TypeScript, shared by everything)
-server            Cloudflare Worker + D1 store (+ Google Calendar: src/calendar.ts link, src/google.ts sign-in)
+server            Cloudflare Worker + D1 store (+ Calendar: calendar.ts/google.ts; Classroom: classroom.ts; OAuth: google-oauth.ts)
 web               the website / installable app (React + Vite -> Cloudflare Pages)
-                  calendar parsing: src/ical.ts, src/calendar-import.ts
+                  imports: src/ical.ts, src/calendar-import.ts, src/classroom-import.ts
                   note editor: src/components/RichTextEditor.tsx (+ src/text-edit.ts), formatting: src/markdown.ts
   web/public      manifest, service worker (sw.js), app icons, Cloudflare headers
 .github/workflows ci.yml (checks on branches/PRs) and deploy.yml (publishes on main)
@@ -63,8 +63,10 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 - **Two Separate Creation Buttons** — choose between **📝 New Note** and **⏰ New Reminder**:
   - **Notes** are large items with a title, a large formatted body (see "Writing notes" below), image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
   - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour from Google Calendar's palette.
-- **Google Calendar import** — connect your calendar once and its events show up as reminders automatically
-  (see below).
+- **Multiple Google accounts** — connect school and home calendars together, with account-level on/off switches
+  shared across your devices. Calendar switches never hide Google Classroom assignments (see below).
+- **Google Classroom import** — connect the student's school account in Settings and published assignment/question
+  deadlines fill Pocketed's calendar automatically, independently of Google Calendar (see below).
 - **Home Screen Reminders Calendar** — a monthly calendar populated with your scheduled reminders, colour-coded
   in **Google Calendar's palette** (Tomato, Basil, Peacock, Avocado…), with one-click colour filtering. The filter
   lists the colours your reminders actually use, so it stays short.
@@ -119,11 +121,15 @@ Formatting is drawn safely: a note can't inject HTML or scripts, and only `http(
 
 ## Google Calendar: auto-filled reminders
 
-Connect once in ⚙️ Settings → **Google Calendar** and your events show up as reminders on every device.
+In ⚙️ Settings → **Google Calendar**, sign in with your home account, then choose **Add Google Calendar account**
+and sign in with your school account. Both stay connected (up to **10 Calendar accounts** per workspace).
+Each account has its own **Check now**, **Reconnect** and **Disconnect account** controls. Choosing an account
+that is already connected renews only that connection; it never replaces the others.
 There are two ways to connect:
 
 - **Sign in with Google** (recommended): copies each event's **exact Google colour**, so colour-coding
-  carries over. Pocketed asks for read-only access and imports **all readable calendars** on your account:
+  carries over. Pocketed requests `calendar.readonly`, plus `openid` and `email` to identify each account,
+  and imports **all readable calendars** on that account:
   primary, additional, shared and subscribed calendars (including hidden/unchecked ones). Calendars that
   only expose free/busy information are skipped. The server owner has to set this up once first
   (SETUP.md, step 8). Until then the button doesn't appear.
@@ -133,7 +139,7 @@ There are two ways to connect:
 
 What happens:
 
-- Events in the **next 60 days** become reminders, labelled 📅 Google Calendar (up to the earliest 500 across all calendars).
+- Events in the **next 60 days** become reminders, labelled 📅 Google Calendar (up to the earliest **500 per account**, across that account's readable calendars).
 - **Colours**: a reminder keeps the colour you gave it in Google — any of Google's 24 colours (Tomato, Sage,
   Basil, Avocado…), including custom shades mixed in Google's colour picker. Events without their own colour take
   the calendar's colour. Some colours come with Sign in with Google (a secret link carries none), but the colour
@@ -162,14 +168,25 @@ What happens:
   A cancelled event's reminder is removed, and once an event has ended its reminder is cleared away.
 - ✅ or 🗑️ on an imported reminder sticks. It only comes back if the event is moved to a new time.
 - Switching from a primary-calendar secret link to Sign in with Google keeps the same reminders and just recolours them.
-  Only one connection is active at a time.
-- **Disconnect** removes the imported reminders and forgets the link, or revokes Pocketed's Google access.
+  Google accounts can coexist, but a secret link remains an alternative: connecting a link replaces **all**
+  Calendar accounts, with an explicit confirmation when multiple accounts are connected. Classroom is unaffected.
+- **Show Calendar events from** appears above the calendar and in Calendar settings. Untick the school account
+  to show home events **and still see school Classroom assignments**. The choice is stored on the server and
+  reaches other open devices with their normal notes sync (normally within **15 seconds**); offline devices
+  pick it up when they reconnect. It works alongside the existing colour/date filters.
+- Hiding is **not disconnecting or deleting**. Hidden events keep importing teacher/calendar edits, and turning
+  the account back on restores its events immediately without another import. This is a **calendar-view filter**:
+  reminder lists, search and alerts are unchanged. Classroom and handmade reminders are never hidden by it.
+- **Disconnect account** removes only that account's imported Calendar items and credentials from all devices.
+  Other Calendar accounts, Classroom assignments and handmade notes stay. Disconnecting a secret link removes
+  its imported events. Google revocation is coordinated with other connections for the same identity.
 - The import is one-way: nothing is ever written back to Google.
-- Already signed in? No new permissions or reconnection are needed. After updating both the server and
-  website, use **Check now** (or wait for the next automatic check) to import your other calendars.
-  The calendar list is refreshed on every check, so newly added calendars are picked up automatically.
-- Events on different calendars remain separate, even when they share an event UID. Existing primary-calendar
-  reminder IDs stay unchanged. If any calendar fails to load, the check fails without removing reminders.
+- **Upgrade:** existing single-account connections and their reminder IDs are migrated automatically; no data
+  or visibility choice is reset. Existing tokens keep importing. On your next sign-in/reconnect Google also
+  asks for basic account identity. Deploy the server before the website and update every client using the workspace.
+- Events on different **accounts** remain separate even if both accounts can read the same shared calendar or
+  event UID. You may see copies when both are on; switch one account off to isolate them. If one account fails,
+  its previous reminders stay and other accounts can still update. A partial feed within one account is rejected.
 
 How it works: the sync server keeps the connection and relays the calendar to the app; the app turns events
 into reminders. With a secret link the app receives the whole calendar file and reads it on the device (a
@@ -179,8 +196,57 @@ expanded, with colours. Alerts only fire while the app is running, so nothing is
 
 Privacy: the secret address, and Google's sign-in token, are stored only in your sync server's database and are
 never sent back to the apps. If a secret link leaks, use **Reset** next to it in Google Calendar, then paste
-the new link into Pocketed (**Change link**). Google access can also be removed any time at
+the new link into Pocketed (**Use a secret link instead**). Google access can also be removed any time at
 myaccount.google.com → Security → Third-party apps.
+
+## Google Classroom: assignment deadlines
+
+Connect in ⚙️ Settings → **Google Classroom** → **Connect Google Classroom**. The server owner must first
+set up the Classroom API and OAuth callback ([SETUP.md, step 9](SETUP.md#9-google-classroom-optional--student-assignment-deadlines)).
+Choose the **student's own Google account** and grant the read-only permissions. A school-managed account
+may need the school's administrator to approve Pocketed; a parent's guardian account does not provide
+access to the student's coursework through this connection.
+
+- Imports **published assignments and questions with valid deadlines** from all **active classes the student
+  is enrolled in**. It does not import teacher-only drafts, announcements, materials or other students' work.
+- New imports cover the **next 60 days**, plus deadlines in the **last 30 days**, up to the earliest **500 new
+  assignments per account per check**. Existing imported assignments keep being updated even if a teacher moves the
+  deadline outside that window. Overdue reminders stay until you dismiss them or the teacher removes them.
+- Each reminder has the **class name and assignment title**, a short description, and an **Open in Classroom**
+  link. It starts in **Basil** green; you can change the colour or put it in a section. Teacher updates keep
+  your colour, section, pin, checklist and alert lead time.
+- Classroom supplies deadlines in **UTC**; Pocketed displays that exact instant in your device's local time,
+  including daylight-saving changes. There are default alerts **30 minutes before** and **when due**.
+- Checks run shortly after opening, then **every 15 minutes while visible** (hourly in the background), or with
+  **Check now**. Like other reminders, alerts and checks require the app to be running; no closed-app jobs.
+- Teacher edits update the **same** reminder, not a duplicate. A full, successful check removes a reminder if
+  its assignment or due date was removed. Failed, malformed or truncated checks change nothing. If a class
+  is archived or becomes inaccessible, its reminders are kept rather than guessed away; dismiss them yourself.
+- **Submission status and grades are not imported.** This is a deadline calendar, not an outstanding-work
+  tracker: assignments already submitted in Classroom can still appear. ✅ clears a Pocketed reminder; it
+  does **not** submit work. ✅ and 🗑️ stay respected unless the teacher gives the assignment a new deadline.
+- Classroom and Google Calendar connect independently, so you can use a **school account for Classroom** and
+  a **personal account for Calendar**, or use Classroom with a secret-link calendar. Disconnecting either does
+  not remove the other's reminders. If Classroom deadlines also appear in your connected Google Calendar,
+  the two independent sources may show the same deadline twice.
+- **Add Classroom account** connects another student without replacing the first (up to **10 Classroom
+  accounts** per workspace). Each student's assignments have distinct IDs and separate check/error states.
+  **Reconnect** renews only the selected identity; choose the same account on Google's account chooser.
+  **Disconnect Classroom** in a student's card removes only that student's Classroom credentials and imports,
+  never another student's work or any Calendar events. Reconnecting after disconnect can import the work again.
+- Turning a school's **Calendar events** off never hides its **Classroom assignments**, even when both use the
+  same Google account. This is useful if Classroom deadlines also appear in Google's own calendar.
+- The connection and its reminders belong to the **Pocketed workspace**, not to an individual browser login.
+  Everyone using that workspace's password can see them. Separate users still need separate instances or
+  a future multi-user account system.
+
+Privacy: tokens stay in the sync server's D1 database, never in the browser or OAuth redirect. Pocketed asks
+for read-only classes and **your own** coursework, plus basic account identity. It never reads rosters, grades,
+submissions, Drive files or attachments, and never writes anything to Classroom or Google Calendar. Removing
+one connection forgets only its own credentials. Google revocation is requested only when no remaining
+connection may rely on that account's grant. Unknown legacy Calendar identities are handled conservatively
+until reauthorized, so revocation may be deferred to avoid breaking another integration. You can also revoke Pocketed at
+**myaccount.google.com → Third-party connections** (which may disconnect both integrations).
 
 ## Security notes
 
@@ -191,8 +257,9 @@ myaccount.google.com → Security → Third-party apps.
 
 ## Next steps (not built yet)
 
-- **Google Calendar extras**: choose a subset of calendars to import (Sign in with Google reads all readable calendars),
+- **Google Calendar extras**: select individual calendars within an account (account-level visibility is already supported),
   and optionally write back to Google.
+- **Classroom extras**: select a subset of classes, and optionally check your own submission status.
 - **Closed-app reminders**: Web Push from the Worker, using a scheduled trigger to send alerts on time.
 - **Native Android app** (Expo, with a home-screen widget): the shared reminder helpers are ready for it.
 - Login rate limiting on the server.

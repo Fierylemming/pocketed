@@ -122,6 +122,9 @@ export interface GoogleCalendar {
 /** What the server's calendar feed returns when signed in with Google. */
 export interface GoogleFeed {
   source: "google";
+  /** Safe connection ID for account-scoped reconciliation. */
+  accountId?: string;
+  legacyIds?: boolean;
   /** Primary colour, retained for clients/servers using the single-calendar feed. */
   calendar: { colorId?: string; backgroundColor?: string };
   calendars?: GoogleCalendar[];

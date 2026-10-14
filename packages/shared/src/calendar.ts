@@ -72,6 +72,10 @@ export interface ReconcileOptions {
   sweep?: boolean;
   /** Event keys the calendar itself reported as cancelled or deleted. */
   cancelledKeys?: readonly string[];
+  /** Reconcile only this connection, never another Google account. */
+  accountId?: string;
+  /** Migrated single-account/iCal imports retain their existing event IDs. */
+  legacyIds?: boolean;
 }
 
 /** 64-bit FNV-1a style hash as 16 hex chars (sync, deterministic, not crypto). */
@@ -88,7 +92,8 @@ export function hash64(s: string): string {
 }
 
 /** Same event occurrence -> same note id, on every device. */
-export function calendarNoteId(eventKey: string): string {
+export function calendarNoteId(eventKey: string, accountId?: string): string {
+  if (accountId) eventKey = JSON.stringify(["account", accountId, eventKey]);
   return "gcal-" + hash64("gcal:" + eventKey) + hash64("salt:" + eventKey).slice(0, 8);
 }
 
@@ -120,7 +125,7 @@ function needsEventTimes(n: Note): boolean {
 }
 
 /** Note fields for an event, keeping the user's own choices from `prev`. */
-export function calendarNoteFields(ev: CalendarEvent, prev: Note | null) {
+export function calendarNoteFields(ev: CalendarEvent, prev: Note | null, accountId?: string) {
   const title = truncate(ev.title || "(No title)", LIMITS.noteTitleChars);
   const body = truncate(ev.description, LIMITS.reminderBodyChars);
   return {
@@ -137,6 +142,7 @@ export function calendarNoteFields(ev: CalendarEvent, prev: Note | null) {
     alertBefore: ev.allDay ? null : CALENDAR_ALERT_BEFORE_MINUTES,
     source: "gcal" as const,
     sourceRef: calendarSourceRef(ev),
+    sourceAccountId: accountId ?? prev?.sourceAccountId ?? null,
     sectionId: prev?.sectionId ?? null,
     color: ev.color ?? prev?.color ?? CALENDAR_REMINDER_COLOR,
     images: prev?.images ?? [],
@@ -163,27 +169,31 @@ export function reconcileCalendar(
   let restored = 0;
   let kept = 0;
   const seen = new Set<string>();
-  const swept = sweptInBulk(s);
+  const owns = (n: Note) => calendarAccountOwns(n, opts);
+  const noteId = (key: string) => calendarNoteId(key, opts.legacyIds ? undefined : opts.accountId);
+  const swept = sweptInBulk(s, owns);
 
   // Cancelled or deleted events: the calendar said so, so their reminders go
   // now — no waiting for the event's time to pass.
   for (const key of opts.cancelledKeys ?? []) {
-    const id = calendarNoteId(key);
-    if (s.notes[id] && !s.notes[id].deleted) {
+    const id = noteId(key);
+    if (s.notes[id] && owns(s.notes[id]) && !s.notes[id].deleted) {
       s = deleteNote(s, id, now);
       removed++;
     }
   }
 
   for (const ev of events.slice(0, MAX_IMPORTED_EVENTS)) {
-    const id = calendarNoteId(ev.key);
+    const id = noteId(ev.key);
     if (seen.has(id)) continue;
     seen.add(id);
     const ref = calendarSourceRef(ev);
     const prev = s.notes[id] ?? null;
+    // A legacy ID collision must never overwrite another account's reminder.
+    if (prev && !owns(prev)) { kept++; continue; }
 
     if (!prev) {
-      s = putItem(s, id, calendarNoteFields(ev, null), now);
+      s = putItem(s, id, calendarNoteFields(ev, null, opts.accountId), now);
       added++;
       continue;
     }
@@ -192,14 +202,15 @@ export function reconcileCalendar(
     // untouched, so this is checked before "unchanged" below.)
     const sweptAway = prev.deleted && swept.has(prev.updatedAt);
     if (prev.sourceRef === ref && !sweptAway) {
-      if (needsEventTimes(prev)) {
+      const needsOwner = !prev.deleted && opts.accountId && prev.sourceAccountId !== opts.accountId;
+      if (needsEventTimes(prev) || needsOwner) {
         s = updateItem(
           s,
           id,
           {
             // A reminder you moved to another time keeps being a moment.
-            endAt: prev.reminderAt === ev.start ? calendarEventEnd(ev) : null,
-            allDay: ev.allDay,
+            ...(needsEventTimes(prev) ? { endAt: prev.reminderAt === ev.start ? calendarEventEnd(ev) : null, allDay: ev.allDay } : {}),
+            ...(needsOwner ? { sourceAccountId: opts.accountId } : {}),
           },
           now,
         );
@@ -213,17 +224,17 @@ export function reconcileCalendar(
       if (sweptAway) {
         // The calendar still has this event, so a check that took the reminder
         // away was wrong: put it back, keeping your own section and pin.
-        s = putItem(s, id, calendarNoteFields(ev, prev), now);
+        s = putItem(s, id, calendarNoteFields(ev, prev, opts.accountId), now);
         restored++;
         continue;
       }
       // Dismissed by hand: stays dismissed unless the event moved to a new time.
       if (refStart(prev.sourceRef) === ev.start) continue;
-      s = putItem(s, id, calendarNoteFields(ev, null), now);
+      s = putItem(s, id, calendarNoteFields(ev, null, opts.accountId), now);
       added++;
       continue;
     }
-    s = putItem(s, id, calendarNoteFields(ev, prev), now);
+    s = putItem(s, id, calendarNoteFields(ev, prev, opts.accountId), now);
     updated++;
   }
 
@@ -231,7 +242,7 @@ export function reconcileCalendar(
   // failed or partial check, and it must not take reminders away.
   const maySweep = opts.sweep !== false && events.length > 0;
   for (const n of Object.values(s.notes)) {
-    if (n.source !== "gcal" || n.deleted || seen.has(n.id)) continue;
+    if (!owns(n) || n.deleted || seen.has(n.id)) continue;
     // Only an event that has already started can be known to be gone (it would
     // still be in the feed otherwise). Anything still to come stays put: the
     // feed may simply not have shown it.
@@ -253,10 +264,10 @@ export function reconcileCalendar(
  * nothing a person does by hand. Deleting a section takes its reminders with it
  * in the same instant too, so those stamps are left out: that is a decision.
  */
-function sweptInBulk(state: SyncState): Set<number> {
+function sweptInBulk(state: SyncState, owns: (n: Note) => boolean): Set<number> {
   const counts = new Map<number, number>();
   for (const n of Object.values(state.notes)) {
-    if (n.deleted && n.source === "gcal") counts.set(n.updatedAt, (counts.get(n.updatedAt) ?? 0) + 1);
+    if (n.deleted && owns(n)) counts.set(n.updatedAt, (counts.get(n.updatedAt) ?? 0) + 1);
   }
   const bySection = new Set<number>();
   for (const sec of Object.values(state.sections ?? {})) {
@@ -270,14 +281,20 @@ function sweptInBulk(state: SyncState): Set<number> {
 }
 
 /** Removes every live imported reminder (used when disconnecting). */
-export function removeImportedReminders(state: SyncState, now: number): CalendarImportResult {
+export function removeImportedReminders(state: SyncState, now: number, opts: ReconcileOptions = {}): CalendarImportResult {
   let s = state;
   let removed = 0;
   for (const n of Object.values(s.notes)) {
-    if (n.source === "gcal" && !n.deleted) {
+    if (calendarAccountOwns(n, opts) && !n.deleted) {
       s = deleteNote(s, n.id, now);
       removed++;
     }
   }
   return { state: s, added: 0, updated: 0, removed, restored: 0, kept: 0 };
+}
+
+/** Untagged pre-multi-account notes belong only to the migrated legacy connection. */
+export function calendarAccountOwns(note: Note, opts: ReconcileOptions): boolean {
+  return note.source === "gcal" && (!opts.accountId || note.sourceAccountId === opts.accountId ||
+    (!note.sourceAccountId && opts.legacyIds === true));
 }

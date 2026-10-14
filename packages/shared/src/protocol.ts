@@ -15,13 +15,14 @@ export const LIMITS = {
   /** Longest "alert me N minutes before" lead time: one week. */
   alertBeforeMinutes: 7 * 24 * 60,
   sourceRefChars: 200,
+  sourceAccountIdChars: 256,
 } as const;
 
 /** Where an item came from. Missing/null = made by hand in Pocketed. */
-export type ItemSource = "gcal";
+export type ItemSource = "gcal" | "classroom";
 
 export function isValidSource(s: unknown): s is ItemSource {
-  return s === "gcal";
+  return s === "gcal" || s === "classroom";
 }
 
 /** Imported calendar events alert this many minutes before they start (and again at the start). */
@@ -254,6 +255,8 @@ export interface Note {
   source?: ItemSource | null;
   /** Importer bookkeeping: which version of the source event this was made from. */
   sourceRef?: string | null;
+  /** Server connection ID: keeps imports and calendar visibility account-specific. */
+  sourceAccountId?: string | null;
   deleted: boolean;
 }
 
@@ -284,6 +287,8 @@ export interface Op {
   allDay?: boolean | null;
   source?: ItemSource | null;
   sourceRef?: string | null;
+  /** Server connection ID: keeps imports and calendar visibility account-specific. */
+  sourceAccountId?: string | null;
   createdAt?: number;
   /** Last-writer-wins timestamp. */
   updatedAt: number;
@@ -359,6 +364,11 @@ export function validateOp(op: Op): string | null {
   }
   if (typeof op.noteId !== "string" || !op.noteId) return "op.noteId missing";
   if (typeof op.updatedAt !== "number") return "op.updatedAt missing";
+  if (op.kind === "upsert" || op.kind === "delete") {
+    if (op.source != null && !isValidSource(op.source)) return "op.source invalid";
+    if (op.sourceAccountId != null && (typeof op.sourceAccountId !== "string" || !op.sourceAccountId || op.sourceAccountId.length > LIMITS.sourceAccountIdChars)) return "op.sourceAccountId invalid";
+    if (op.sourceRef != null && (typeof op.sourceRef !== "string" || op.sourceRef.length > LIMITS.sourceRefChars)) return "op.sourceRef invalid";
+  }
   if (op.kind === "upsert") {
     if (typeof op.text !== "string") return "op.text missing";
     if (op.text.length > LIMITS.noteTextChars) return "op.text too long";
@@ -404,15 +414,6 @@ export function validateOp(op: Op): string | null {
     if (op.allDay != null && typeof op.allDay !== "boolean") {
       return "op.allDay invalid";
     }
-    if (op.source != null && !isValidSource(op.source)) {
-      return "op.source invalid";
-    }
-    if (
-      op.sourceRef != null &&
-      (typeof op.sourceRef !== "string" || op.sourceRef.length > LIMITS.sourceRefChars)
-    ) {
-      return "op.sourceRef invalid";
-    }
     if (op.images !== undefined) {
       if (!Array.isArray(op.images) || op.images.length > LIMITS.maxImagesPerNote) {
         return "op.images invalid";
@@ -442,4 +443,29 @@ export function validateOp(op: Op): string | null {
     }
   }
   return null;
+}
+
+/** Safe Calendar connection metadata, also included in each authenticated sync pull. */
+export interface CalendarAccountSummary {
+  id: string;
+  email: string | null;
+  connectedAt: number;
+  problem: string | null;
+  visible: boolean;
+  /** Old single-account imports keep their original IDs and may lack an owner tag. */
+  legacyIds: boolean;
+}
+
+export function isCalendarAccountSummary(value: unknown): value is CalendarAccountSummary {
+  const v = value as CalendarAccountSummary;
+  return !!v && typeof v === "object" && typeof v.id === "string" && !!v.id && v.id.length <= LIMITS.sourceAccountIdChars &&
+    (v.email === null || typeof v.email === "string") && typeof v.connectedAt === "number" && Number.isFinite(v.connectedAt) &&
+    (v.problem === null || typeof v.problem === "string") && typeof v.visible === "boolean" && typeof v.legacyIds === "boolean";
+}
+
+/** Only Calendar events are filtered. Classroom assignments and handmade items always remain. */
+export function filterCalendarAccounts(notes: Note[], accounts: readonly CalendarAccountSummary[]): Note[] {
+  const hidden = new Set(accounts.filter((a) => !a.visible).map((a) => a.id));
+  const legacy = accounts.find((a) => a.legacyIds);
+  return notes.filter((n) => n.source !== "gcal" || !hidden.has(n.sourceAccountId || legacy?.id || ""));
 }

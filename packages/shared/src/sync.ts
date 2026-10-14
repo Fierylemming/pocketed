@@ -6,6 +6,7 @@ import {
   DEFAULT_REMINDER_COLOR,
   sortSections,
   uid,
+  type CalendarAccountSummary,
   type ChecklistItem,
   type ItemKind,
   type ItemSource,
@@ -25,6 +26,9 @@ export interface SyncState {
   outbox: Op[];
   /** Last server sequence number we have seen. */
   cursor: number;
+  /** Latest server-owned visibility preferences; never placed in the notes outbox. */
+  calendarAccounts?: CalendarAccountSummary[];
+  calendarAccountsRevision?: number;
 }
 
 export interface ItemExtraFields {
@@ -43,6 +47,7 @@ export interface ItemExtraFields {
   allDay?: boolean | null;
   source?: ItemSource | null;
   sourceRef?: string | null;
+  sourceAccountId?: string | null;
 }
 
 export interface CreateNoteInput {
@@ -119,6 +124,7 @@ export function addNote(
     allDay: extra?.allDay ?? null,
     source: extra?.source ?? null,
     sourceRef: extra?.sourceRef ?? null,
+    sourceAccountId: extra?.sourceAccountId ?? null,
     deleted: false,
   };
   const op: Op = {
@@ -142,6 +148,7 @@ export function addNote(
     allDay: note.allDay ?? null,
     source: note.source,
     sourceRef: note.sourceRef,
+    sourceAccountId: note.sourceAccountId ?? null,
     createdAt: now,
     updatedAt: now,
   };
@@ -225,6 +232,7 @@ export function editNote(
     allDay: extra?.allDay !== undefined ? extra.allDay : (prev.allDay ?? null),
     source: extra?.source !== undefined ? extra.source : (prev.source ?? null),
     sourceRef: extra?.sourceRef !== undefined ? extra.sourceRef : (prev.sourceRef ?? null),
+    sourceAccountId: extra?.sourceAccountId !== undefined ? extra.sourceAccountId : (prev.sourceAccountId ?? null),
     updatedAt: now,
   };
   const op: Op = {
@@ -248,6 +256,7 @@ export function editNote(
     allDay: note.allDay ?? null,
     source: note.source,
     sourceRef: note.sourceRef,
+    sourceAccountId: note.sourceAccountId ?? null,
     createdAt: note.createdAt,
     updatedAt: now,
   };
@@ -297,6 +306,7 @@ export function updateItem(
     allDay: patch.allDay !== undefined ? patch.allDay : prev.allDay,
     source: patch.source !== undefined ? patch.source : prev.source,
     sourceRef: patch.sourceRef !== undefined ? patch.sourceRef : prev.sourceRef,
+    sourceAccountId: patch.sourceAccountId !== undefined ? patch.sourceAccountId : prev.sourceAccountId,
   });
 }
 
@@ -351,17 +361,21 @@ export function putItem(
     allDay: note.allDay ?? null,
     source: note.source ?? null,
     sourceRef: note.sourceRef ?? null,
+    sourceAccountId: note.sourceAccountId ?? null,
     createdAt: note.createdAt,
     updatedAt: now,
   };
   return pushOp({ ...state, notes: { ...state.notes, [id]: note } }, op);
 }
 
-export function deleteNote(state: SyncState, id: string, now: number): SyncState {
+/** Importers may override the source reference to distinguish removal from manual dismissal. */
+export function deleteNote(state: SyncState, id: string, now: number, sourceRef?: string): SyncState {
   const prev = state.notes[id];
   if (!prev) return state;
-  const note: Note = { ...prev, deleted: true, reminderAt: null, repeat: null, updatedAt: now };
-  const op: Op = { id: uid(), kind: "delete", noteId: id, updatedAt: now };
+  const note: Note = { ...prev, sourceRef: sourceRef ?? prev.sourceRef, deleted: true, reminderAt: null, repeat: null, updatedAt: now };
+  // Deletion can collapse an unsent upsert. Carry import identity/bookkeeping
+  // on the tombstone so another device makes the same re-import decision.
+  const op: Op = { id: uid(), kind: "delete", noteId: id, updatedAt: now, source: note.source ?? null, sourceRef: note.sourceRef ?? null, sourceAccountId: note.sourceAccountId ?? null };
   return pushOp({ ...state, notes: { ...state.notes, [id]: note } }, op);
 }
 
@@ -527,16 +541,16 @@ export function applyRemote(state: SyncState, ops: Op[]): SyncState {
     const cur = notes[op.noteId];
     if (cur && cur.updatedAt > op.updatedAt) continue;
     if (op.kind === "delete") {
-      notes[op.noteId] = cur
-        ? { ...cur, deleted: true, reminderAt: null, updatedAt: op.updatedAt }
-        : {
-            id: op.noteId,
-            text: "",
-            createdAt: op.updatedAt,
-            updatedAt: op.updatedAt,
-            reminderAt: null,
-            deleted: true,
-          };
+      notes[op.noteId] = {
+        ...(cur ?? { id: op.noteId, text: "", createdAt: op.updatedAt }),
+        deleted: true,
+        reminderAt: null,
+        repeat: null,
+        updatedAt: op.updatedAt,
+        source: op.source !== undefined ? op.source : (cur?.source ?? null),
+        sourceRef: op.sourceRef !== undefined ? op.sourceRef : (cur?.sourceRef ?? null),
+        sourceAccountId: op.sourceAccountId !== undefined ? op.sourceAccountId : (cur?.sourceAccountId ?? null),
+      };
     } else {
       notes[op.noteId] = {
         id: op.noteId,
@@ -571,6 +585,7 @@ export function applyRemote(state: SyncState, ops: Op[]): SyncState {
         allDay: op.allDay !== undefined ? op.allDay : (cur?.allDay ?? null),
         source: op.source !== undefined ? op.source : (cur?.source ?? null),
         sourceRef: op.sourceRef !== undefined ? op.sourceRef : (cur?.sourceRef ?? null),
+        sourceAccountId: op.sourceAccountId !== undefined ? op.sourceAccountId : (cur?.sourceAccountId ?? null),
         deleted: false,
       };
     }

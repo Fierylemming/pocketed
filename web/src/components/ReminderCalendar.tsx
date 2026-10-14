@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   buildCalendarMonth,
+  filterCalendarAccounts,
+  type CalendarAccountSummary,
   DEFAULT_REMINDER_COLOR,
   filterRemindersByColor,
   formatSpanLabel,
@@ -37,7 +39,9 @@ const MONTHS = [
 ];
 
 export function ReminderCalendar({
-  notes,
+  notes: unfilteredNotes,
+  accounts = [],
+  accountControls,
   sections,
   now,
   colorFilter,
@@ -47,6 +51,8 @@ export function ReminderCalendar({
   renderReminderCard,
 }: {
   notes: Note[];
+  accounts?: CalendarAccountSummary[];
+  accountControls?: React.ReactNode;
   sections: Section[];
   now: number;
   colorFilter: ReminderColorId | "all";
@@ -55,6 +61,7 @@ export function ReminderCalendar({
   onQuickAddReminderForDate: (ts: number, color: ReminderColorId) => void;
   renderReminderCard: (note: Note, sectionBadge?: Section | null) => React.ReactNode;
 }) {
+  const notes = filterCalendarAccounts(unfilteredNotes, accounts);
   const todayDate = new Date(now);
   const [viewYear, setViewYear] = useState(todayDate.getFullYear());
   const [viewMonth, setViewMonth] = useState(todayDate.getMonth());
@@ -160,6 +167,8 @@ export function ReminderCalendar({
           </button>
         </div>
       </div>
+
+      {accountControls}
 
       {/* Colour Filter Bar */}
       <div className="color-filter-bar" role="group" aria-label="Filter calendar by colour">
