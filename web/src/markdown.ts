@@ -11,6 +11,7 @@
 export type Inline =
   | { type: "text"; text: string }
   | { type: "code"; text: string }
+  | { type: "math"; tex: string; display: boolean }
   | { type: "strong" | "em" | "del" | "mark"; children: Inline[] }
   | { type: "link"; href: string; children: Inline[] };
 
@@ -30,11 +31,21 @@ export interface ListBlock {
   items: ListItem[];
 }
 
+export interface TableBlock {
+  type: "table";
+  /** One entry per column: text-align, or null for the default (left). */
+  align: Array<"left" | "center" | "right" | null>;
+  header: Inline[][];
+  rows: Inline[][][];
+}
+
 export type Block =
   | { type: "heading"; level: 1 | 2 | 3; content: Inline[] }
   | { type: "paragraph"; content: Inline[] }
   | { type: "quote"; content: Inline[] }
   | { type: "code"; text: string }
+  | { type: "mathblock"; tex: string }
+  | TableBlock
   | { type: "hr" }
   | ListBlock;
 
@@ -44,6 +55,19 @@ const HEADING_RE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
 const HR_RE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
 const FENCE_RE = /^\s{0,3}```/;
 const QUOTE_RE = /^\s{0,3}>\s?(.*)$/;
+/** A line that opens a display-maths block: up to three spaces, then $$. */
+const MATH_DISPLAY_RE = /^\s{0,3}\$\$/;
+
+/**
+ * Whether the line opens a display-maths block. A $$…$$ pair with text around
+ * it ("$$x$$ is the answer") is inline maths in a paragraph instead.
+ */
+function mathBlockStartsAt(line: string): boolean {
+  if (!MATH_DISPLAY_RE.test(line)) return false;
+  const one = /^\s{0,3}\$\$(.+)\$\$\s*$/.exec(line);
+  if (one && one[1]!.trim() && !one[1]!.includes("$$")) return true;
+  return line.indexOf("$$", 2) < 0;
+}
 
 const SAFE_URL = /^(https?:\/\/|mailto:)/i;
 
@@ -100,6 +124,28 @@ function findClose(src: string, from: number, d: Delim): number {
   return -1;
 }
 
+/**
+ * The position of the `$` that closes inline maths opened just before `from`,
+ * or -1 when it isn't maths after all. A backslashed `\$` stays in the
+ * content; maths can't span lines; and a closing `$` hugging a space or a
+ * following digit doesn't count, so "$5 and $10" stays money.
+ */
+function findMathClose(src: string, from: number): number {
+  for (let i = from + 1; i < src.length; i++) {
+    const c = src[i]!;
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (c === "\n") return -1;
+    if (c !== "$") continue;
+    if (/\s/.test(src[i - 1]!)) return -1;
+    if (src[i + 1] && /\d/.test(src[i + 1]!)) return -1;
+    return i;
+  }
+  return -1;
+}
+
 export function parseInline(src: string): Inline[] {
   const out: Inline[] = [];
   let text = "";
@@ -113,7 +159,7 @@ export function parseInline(src: string): Inline[] {
     const ch = src[i]!;
 
     // Backslash escape: \* shows a literal *.
-    if (ch === "\\" && i + 1 < src.length && /[\\`*_~=[\]()#>+\-.!|]/.test(src[i + 1]!)) {
+    if (ch === "\\" && i + 1 < src.length && /[\\`*_~=[\]()#>+\-.!|$]/.test(src[i + 1]!)) {
       text += src[i + 1];
       i += 2;
       continue;
@@ -151,6 +197,30 @@ export function parseInline(src: string): Inline[] {
         flush();
         out.push({ type: "link", href: m[0], children: [{ type: "text", text: m[0] }] });
         i += m[0].length;
+        continue;
+      }
+    }
+
+    // $$display$$ maths, inline in a line of text.
+    if (ch === "$" && src[i + 1] === "$") {
+      const close = src.indexOf("$$", i + 2);
+      const tex = close >= 0 ? src.slice(i + 2, close).trim() : "";
+      if (tex) {
+        flush();
+        out.push({ type: "math", tex, display: true });
+        i = close + 2;
+        continue;
+      }
+    }
+
+    // $inline$ maths: the opener must be followed by something other than a
+    // space or another $, and findMathClose applies the rest of the rules.
+    if (ch === "$" && src[i + 1] && src[i + 1] !== "$" && !/\s/.test(src[i + 1]!)) {
+      const close = findMathClose(src, i + 1);
+      if (close >= 0) {
+        flush();
+        out.push({ type: "math", tex: src.slice(i + 1, close), display: false });
+        i = close + 1;
         continue;
       }
     }
@@ -194,6 +264,86 @@ function indentWidth(ws: string): number {
   let w = 0;
   for (const c of ws) w += c === "\t" ? 4 : 1;
   return w;
+}
+
+/* ---------------- Tables ---------------- */
+
+/**
+ * Splits a table row into cell source strings. A `|` separates cells unless
+ * it's written `\|` (a literal pipe) — and outer pipes are optional, so both
+ * `a | b` and `| a | b |` work.
+ */
+export function splitTableRow(line: string): string[] {
+  const t = line.trim();
+  let from = 0;
+  let to = t.length;
+  if (t.startsWith("|")) from = 1;
+  if (to > from && t.endsWith("|") && !t.endsWith("\\|")) to -= 1;
+  const cells: string[] = [];
+  let cur = "";
+  for (let i = from; i < to; i++) {
+    const c = t[i]!;
+    if (c === "\\" && t[i + 1] === "|") {
+      cur += "|";
+      i++;
+      continue;
+    }
+    if (c === "|") {
+      cells.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  cells.push(cur);
+  return cells;
+}
+
+/** The `--- | :---: | ---:` row under a table's header. */
+export function isTableDivider(line: string): boolean {
+  const t = line.trim();
+  if (!t.includes("|")) return false;
+  return splitTableRow(t).every((c) => /^:?-+:?$/.test(c.trim()));
+}
+
+function cellAlign(cell: string): "left" | "center" | "right" | null {
+  const t = cell.trim();
+  const left = t.startsWith(":");
+  const right = t.endsWith(":");
+  return left && right ? "center" : left ? "left" : right ? "right" : null;
+}
+
+function parseTable(
+  headerLine: string,
+  dividerLine: string,
+  rowLines: string[],
+): TableBlock {
+  const align = splitTableRow(dividerLine).map(cellAlign);
+  const cols = align.length;
+  const cells = (line: string): Inline[][] => {
+    const row = splitTableRow(line).slice(0, cols);
+    while (row.length < cols) row.push("");
+    return row.map((c) => parseInline(c.trim()));
+  };
+  return { type: "table", align, header: cells(headerLine), rows: rowLines.map(cells) };
+}
+
+/** Whether a line continues a table's body: text with a pipe in it. */
+function isTableRowLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || !t.includes("|")) return false;
+  return !FENCE_RE.test(line) && !HEADING_RE.test(line) && !QUOTE_RE.test(line) && !HR_RE.test(line);
+}
+
+/** Whether a table (a header row followed by its divider) starts at line `i`. */
+function tableStartsAt(lines: string[], i: number): boolean {
+  const line = lines[i]!;
+  return (
+    line.includes("|") &&
+    !LIST_RE.test(line) &&
+    i + 1 < lines.length &&
+    isTableDivider(lines[i + 1]!)
+  );
 }
 
 function parseListLine(line: string, index: number): RawItem | null {
@@ -292,6 +442,44 @@ export function parseMarkdown(src: string): Block[] {
       continue;
     }
 
+    // Display maths: $$…$$ alone on a line, or $$ opening a block that runs
+    // to the next line ending in $$. Text around a $$…$$ pair stays a
+    // paragraph, where the pair becomes display-sized inline maths.
+    if (mathBlockStartsAt(line)) {
+      const one = /^\s{0,3}\$\$(.+)\$\$\s*$/.exec(line);
+      if (one && one[1]!.trim() && !one[1]!.includes("$$")) {
+        blocks.push({ type: "mathblock", tex: one[1]!.trim() });
+        i++;
+        continue;
+      }
+      const body: string[] = [];
+      const rest = line.replace(MATH_DISPLAY_RE, "");
+      if (rest.trim()) body.push(rest);
+      i++;
+      while (i < lines.length) {
+        const close = /^(.*)\$\$\s*$/.exec(lines[i]!);
+        if (close) {
+          if (close[1]!.trim()) body.push(close[1]!);
+          i++;
+          break;
+        }
+        body.push(lines[i]!);
+        i++;
+      }
+      blocks.push({ type: "mathblock", tex: body.join("\n").trim() });
+      continue;
+    }
+
+    // A table: a header row with pipes, then a divider row (--- | ---).
+    if (tableStartsAt(lines, i)) {
+      const divider = lines[i + 1]!;
+      i += 2;
+      const rows: string[] = [];
+      while (i < lines.length && isTableRowLine(lines[i]!)) rows.push(lines[i++]!);
+      blocks.push(parseTable(line, divider, rows));
+      continue;
+    }
+
     if (LIST_RE.test(line)) {
       const items: RawItem[] = [];
       while (i < lines.length) {
@@ -313,7 +501,9 @@ export function parseMarkdown(src: string): Block[] {
       !HEADING_RE.test(lines[i]!) &&
       !QUOTE_RE.test(lines[i]!) &&
       !LIST_RE.test(lines[i]!) &&
-      !HR_RE.test(lines[i]!)
+      !HR_RE.test(lines[i]!) &&
+      !mathBlockStartsAt(lines[i]!) &&
+      !tableStartsAt(lines, i)
     ) {
       body.push(lines[i]!);
       i++;
@@ -352,7 +542,20 @@ export function taskProgress(src: string): { done: number; total: number } {
 
 function inlineText(nodes: Inline[]): string {
   return nodes
-    .map((n) => (n.type === "text" || n.type === "code" ? n.text : inlineText(n.children)))
+    .map((n) => {
+      switch (n.type) {
+        case "strong":
+        case "em":
+        case "del":
+        case "mark":
+        case "link":
+          return inlineText(n.children);
+        case "math":
+          return n.tex;
+        default:
+          return n.text;
+      }
+    })
     .join("");
 }
 
@@ -384,6 +587,20 @@ export function toPlainText(src: string): string {
       case "code":
         out.push(b.text, "");
         break;
+      case "mathblock":
+        out.push(b.tex, "");
+        break;
+      case "table": {
+        const cells = (row: Inline[][]) => row.map((c) => inlineText(c));
+        const all = [cells(b.header), ...b.rows.map(cells)];
+        const widths = b.header.map((_, c) => Math.max(...all.map((r) => r[c]!.length)));
+        all.forEach((row, r) => {
+          out.push(row.map((cell, c) => cell.padEnd(widths[c]!)).join("  ").trimEnd());
+          if (r === 0) out.push(widths.map((w) => "-".repeat(w)).join("  ").trimEnd());
+        });
+        out.push("");
+        break;
+      }
       case "hr":
         out.push("—————", "");
         break;

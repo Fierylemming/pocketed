@@ -311,6 +311,208 @@ export function insertCodeBlock(s: EditState): EditState {
   ]);
 }
 
+/* ---------------- Tables & maths ---------------- */
+
+/** Whether the line holds a `|` that isn't the escaped-literal `\|`. */
+function hasPipe(line: string): boolean {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "\\" && line[i + 1] === "|") {
+      i++;
+      continue;
+    }
+    if (line[i] === "|") return true;
+  }
+  return false;
+}
+
+/** Trimmed [start, end) of each cell in a table row line, as absolute offsets. */
+function rowCellSpans(line: string, ls: number): Array<[number, number]> {
+  const t = line.trimStart();
+  const indent = line.length - t.length;
+  const pipes: number[] = [];
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === "\\" && t[i + 1] === "|") {
+      i++;
+      continue;
+    }
+    if (t[i] === "|") pipes.push(i);
+  }
+  let from = 0;
+  let to = t.length;
+  if (t.startsWith("|")) from = 1;
+  if (to > from && t.endsWith("|") && !t.endsWith("\\|") && pipes[pipes.length - 1] === to - 1) {
+    to -= 1;
+  }
+  const spans: Array<[number, number]> = [];
+  let segStart = from;
+  for (const p of pipes) {
+    if (p < from || p >= to) continue;
+    spans.push([segStart, p]);
+    segStart = p + 1;
+  }
+  spans.push([segStart, to]);
+  return spans.map(([a, b]) => {
+    while (a < b && /\s/.test(t[a]!)) a++;
+    while (b > a && /\s/.test(t[b - 1]!)) b--;
+    return [ls + indent + a, ls + indent + b] as [number, number];
+  });
+}
+
+interface TableRow {
+  ls: number;
+  le: number;
+  cells: Array<[number, number]>;
+  divider: boolean;
+}
+
+/** The `--- | :---: | ---:` divider row under a table header. */
+function isDividerRow(trimmed: string): boolean {
+  const body = trimmed.startsWith("|") ? trimmed.slice(1) : trimmed;
+  const inner = body.endsWith("|") && !body.endsWith("\\|") ? body.slice(0, -1) : body;
+  return inner.split(/(?<!\\)\|/).every((c) => /^:?-+:?$/.test(c.trim()));
+}
+
+/**
+ * The pipe-delimited lines around the cursor, when they form a real table
+ * (one of them is a `--- | ---` divider). Blank lines end the table.
+ */
+function findTable(value: string, pos: number): TableRow[] | null {
+  const cursorStart = value.lastIndexOf("\n", pos - 1) + 1;
+  let lineEnd = value.indexOf("\n", cursorStart);
+  if (lineEnd < 0) lineEnd = value.length;
+  if (!hasPipe(value.slice(cursorStart, lineEnd))) return null;
+
+  let first = cursorStart;
+  while (first > 0) {
+    const prevStart = value.lastIndexOf("\n", first - 2) + 1;
+    const prev = value.slice(prevStart, first - 1);
+    if (!prev.trim() || !hasPipe(prev)) break;
+    first = prevStart;
+  }
+
+  const rows: TableRow[] = [];
+  let divider = false;
+  for (let at = first; at <= value.length; ) {
+    let end = value.indexOf("\n", at);
+    if (end < 0) end = value.length;
+    const line = value.slice(at, end);
+    const trimmed = line.trim();
+    if (!trimmed || !hasPipe(line)) break;
+    const isDivider = isDividerRow(trimmed);
+    if (isDivider) divider = true;
+    rows.push({ ls: at, le: end, cells: rowCellSpans(line, at), divider: isDivider });
+    if (end >= value.length) break;
+    at = end + 1;
+  }
+  if (!divider || !rows.length) return null;
+  return rows;
+}
+
+/** Wraps a cell's text so pipes inside it survive the table format. */
+const escapeCell = (t: string) => t.trim().replace(/\|/g, "\\|");
+
+const STARTER_TABLE = "| Column A | Column B |\n| --- | --- |\n|  |  |\n|  |  |";
+
+/**
+ * Inserts a table. With a selection: several lines become one row each
+ * (the first line is the header); a single line is split on `|` into header
+ * columns. With nothing selected: a small starter table.
+ */
+export function insertTable(s: EditState): EditState {
+  const { value, start, end } = clampSel(s);
+  const sel = value.slice(start, end);
+  if (!sel.trim()) return insertBlock(s, STARTER_TABLE, [2, 10]);
+
+  if (sel.includes("\n")) {
+    const [ls, le] = lineBounds(value, start, end);
+    const lines = value.slice(ls, le).split("\n").filter((l) => l.trim());
+    const table = [
+      `| ${escapeCell(lines[0]!)} |`,
+      "| --- |",
+      ...lines.slice(1).map((l) => `| ${escapeCell(l)} |`),
+    ].join("\n");
+    return insertBlock({ value, start: ls, end: le }, table);
+  }
+
+  const cells = (sel.includes("|") ? sel.split(/(?<!\\)\|/) : [sel])
+    .map(escapeCell)
+    .filter((c) => c);
+  if (!cells.length) return insertBlock(s, STARTER_TABLE, [2, 10]);
+  const divider = `| ${cells.map(() => "---").join(" | ")} |`;
+  const blank = `| ${cells.map(() => " ").join(" | ")} |`;
+  const table = [`| ${cells.join(" | ")} |`, divider, blank].join("\n");
+  return insertBlock(s, table, [2, 2 + cells[0]!.length]);
+}
+
+/**
+ * Tab between table cells: moves the selection onto the next (or previous)
+ * cell's text, wrapping around the table. Null when not in a table.
+ */
+export function tableCellNav(s: EditState, dir: 1 | -1): EditState | null {
+  const rows = findTable(s.value, s.start);
+  if (!rows) return null;
+  const cells = rows.filter((r) => !r.divider).flatMap((r) => r.cells);
+  if (!cells.length) return null;
+  let idx = 0;
+  for (let i = cells.length - 1; i >= 0; i--) {
+    if (s.start >= cells[i]![0]) {
+      idx = i;
+      break;
+    }
+  }
+  idx = (idx + dir + cells.length) % cells.length;
+  const [a, b] = cells[idx]!;
+  return { value: s.value, start: a, end: b };
+}
+
+/**
+ * Enter inside a table row: starts the next row (same number of cells, all
+ * empty, cursor in the first). Enter on a row that's entirely empty removes
+ * it and ends the table, like lists do. Null when not in a table.
+ */
+export function continueTable(s: EditState): EditState | null {
+  const { value, start, end } = clampSel(s);
+  if (start !== end) return null;
+  const rows = findTable(value, start);
+  if (!rows) return null;
+  const row = rows.find((r) => start >= r.ls && start <= r.le);
+  if (!row || row.divider) return null;
+
+  const allEmpty = row.cells.every(([a, b]) => value.slice(a, b) === "");
+  if (allEmpty) {
+    // End the table: drop this row, and the line break before it when it
+    // was the last row (so no blank line is left behind).
+    const after = row.le < value.length ? value.slice(row.le + 1) : "";
+    const from = after === "" && row.ls > 0 ? row.ls - 1 : row.ls;
+    const next = value.slice(0, from) + after;
+    const at = Math.min(from, next.length);
+    return { value: next, start: at, end: at };
+  }
+
+  const emptyRow = `| ${row.cells.map(() => " ").join(" | ")} |`;
+  const next = value.slice(0, row.le) + "\n" + emptyRow + value.slice(row.le);
+  // The cursor lands in the new row's first cell: after "| " on that line.
+  const at = row.le + 3;
+  return { value: next, start: at, end: at };
+}
+
+/** Wraps the selection as $inline$ maths, or inserts a formula to edit. */
+export function insertMath(s: EditState): EditState {
+  return toggleWrap(s, "$", "$", "x^2");
+}
+
+/**
+ * Puts the selected lines (or a sample formula) into a $$ display block,
+ * where fractions and sums are drawn at full size.
+ */
+export function insertMathBlock(s: EditState): EditState {
+  const { value, start, end } = clampSel(s);
+  if (start === end) return insertBlock(s, "$$\n\\frac{a}{b}\n$$", [3, 14]);
+  const [ls, le] = lineBounds(value, start, end);
+  const inner = value.slice(ls, le);
+  return insertBlock({ value, start: ls, end: le }, "$$\n" + inner + "\n$$");
+}
+
 /* ---------------- Find & replace ---------------- */
 
 export interface FindOptions {

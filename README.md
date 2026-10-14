@@ -83,10 +83,14 @@ A note's body is written in a proper text editor, used both when creating and wh
 
 - **Formatting toolbar**: bold, italic, strikethrough, highlight, inline code, headings (H1–H3),
   bulleted / numbered / tick-able task lists, indent and outdent, quotes, code blocks, links, divider
-  lines and an insert-date-and-time button. On phones the toolbar scrolls sideways.
-- **Undo / redo** (↶ ↷, or Ctrl/⌘+Z and Ctrl/⌘+Shift+Z). Quick typing is grouped into one step.
-- **Smart lists**: Enter continues a list (the next number, a fresh ☐). Enter on an empty item ends it.
-  Tab / Shift+Tab indent list items.
+  lines, an insert-date-and-time button, tables and maths. On phones the toolbar scrolls sideways.
+- **Tables** (⊞): insert a starter table, or select a few lines and ⊞ turns them into rows.
+  Tab / Shift+Tab jump between cells, and Enter starts the next row — Enter on an empty row ends
+  the table. A header line over a `| --- | --- |` divider renders as a table everywhere a note shows.
+- **Maths** (x², ∑): write LaTeX between `$…$` inline or on `$$…$$ lines as a display block —
+  exponents (`x^2`), subscripts (`x_i`), fractions (`\frac{a}{b}`), roots (`\sqrt{2}`) and the like
+  are typeset properly in previews and on note cards. Formulas are shown as their LaTeX source until
+  the maths engine (KaTeX) has loaded, which happens once, the first time a note actually has maths.
 - **Find & replace** (🔍 or Ctrl/⌘+F): matches are highlighted in the text, with match case,
   whole words, replace and replace all.
 - **Preview** (👁) shows the note formatted, and you can tick its tasks there.
@@ -98,12 +102,13 @@ A note's body is written in a proper text editor, used both when creating and wh
 - **Ctrl/⌘+Enter** saves. Cancelling an edit with unsaved changes asks first.
 - **?** in the toolbar lists every shortcut and the formatting you can type yourself.
 
-Formatting is stored as plain Markdown-style text (`**bold**`, `# Heading`, `- [ ] task`, `==highlight==`),
-so it syncs like any other note and older notes look the same as before. Notes are shown formatted on their
-cards and in the full view. Task boxes written in the body can be ticked right there, and the card shows
-progress (☑ 2/5). Search results highlight the words you searched for. In the full view, **Copy text** copies
-the note without formatting marks, **Copy Markdown** copies it with them, and **Download** saves it as a `.md` file.
-Formatting is drawn safely: a note can't inject HTML or scripts, and only `http(s)` and `mailto` links work.
+Formatting is stored as plain Markdown-style text (`**bold**`, `# Heading`, `- [ ] task`, `==highlight==`,
+`| a | b |` table rows, `$x^2$` maths), so it syncs like any other note and older notes look the same as
+before. Notes are shown formatted on their cards and in the full view. Task boxes written in the body can be
+ticked right there, and the card shows progress (☑ 2/5). Search results highlight the words you searched for.
+In the full view, **Copy text** copies the note without formatting marks, **Copy Markdown** copies it with
+them, and **Download** saves it as a `.md` file. Formatting is drawn safely: a note can't inject HTML or
+scripts, and only `http(s)` and `mailto` links work.
 
 ## Reminders: what to expect
 

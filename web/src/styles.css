@@ -1582,6 +1582,40 @@ body.rte-focus-lock { overflow: hidden; }
   .md mark.md-mark { background: rgba(250, 204, 21, 0.3); color: inherit; }
 }
 
+/* Tables */
+.md-table-wrap { overflow-x: auto; margin: 0 0 0.6em; }
+.md-table { border-collapse: collapse; font-size: 0.95em; max-width: 100%; }
+.md-table th, .md-table td {
+  border: 1px solid var(--line-strong);
+  padding: 0.28em 0.6em;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.md-table th { background: var(--inset); font-weight: 650; }
+.md-table .md-align-center { text-align: center; }
+.md-table .md-align-right { text-align: right; }
+
+/* Maths (KaTeX). Formula chips show the LaTeX until the library loads. */
+.md-math-tex {
+  font: 0.85em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--inset);
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  padding: 0.05em 0.3em;
+  overflow-wrap: anywhere;
+}
+.md-math { overflow-wrap: normal; }
+.md-math-display { display: block; }
+.md-math-block { margin: 0 0 0.6em; }
+.md-math .katex-display {
+  margin: 0.15em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.1em 0;
+}
+.reminder-body .md-math .katex { font-size: 1em; }
+
 /* Composer footer extras */
 .composer-submit { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; justify-content: flex-end; }
 .draft-status { display: inline-flex; align-items: center; gap: 0.2rem; }
