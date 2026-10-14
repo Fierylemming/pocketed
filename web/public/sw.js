@@ -2,7 +2,7 @@
 // offline. Notes themselves live in localStorage (the app syncs them), so this
 // only caches the app shell. API calls go straight to the network.
 
-const SHELL_CACHE = "pocketed-shell-v4";
+const SHELL_CACHE = "pocketed-shell-v5";
 const ASSET_CACHE = "pocketed-assets";
 const KEEP = new Set([SHELL_CACHE, ASSET_CACHE]);
 const SHELL = [

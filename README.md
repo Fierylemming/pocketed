@@ -9,10 +9,15 @@ Your "things I need to remember" app: quick notes and reminders, on every device
 
 ## Workspace and appearance
 
-The workspace uses a shared navy-and-teal design system with responsive layouts,
-line icons, live overview counts, recent notes, and an on-demand note/reminder editor.
-Use **New note** to open the editor; closing it keeps the current draft mounted.
-Text drafts continue to be saved on this device using the existing draft storage.
+The workspace uses the Meridian design system — an institutional-grade visual
+language of quiet neutrals, hairline borders, tabular figures and a single deep-teal
+brand accent, with a quiet gold secondary. Built for an audience of one the way
+a bank builds for millions: restrained colour, a measured type scale, layered
+elevation in dark mode, visible focus everywhere, and reduced-motion support.
+Responsive layouts, line icons, live overview counts, recent notes, and an
+on-demand note/reminder editor. Use **New note** to open the editor; closing it
+keeps the current draft mounted. Text drafts continue to be saved on this device
+using the existing draft storage.
 
 Choose **Light**, **Dark**, or **System** in the sidebar, in **Settings → Appearance**,
 or using the icons on the sign-in screen. The choice is remembered on this device
