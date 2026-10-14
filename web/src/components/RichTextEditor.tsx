@@ -11,6 +11,7 @@ import {
 import { toggleTaskLine } from "../markdown";
 import {
   continueList,
+  continueTable,
   cursorPosition,
   EditHistory,
   findMatches,
@@ -20,8 +21,12 @@ import {
   insertBlock,
   insertCodeBlock,
   insertLink,
+  insertMath,
+  insertMathBlock,
+  insertTable,
   insertText,
   replaceAll,
+  tableCellNav,
   textStats,
   toggleHeading,
   toggleLineFormat,
@@ -52,6 +57,9 @@ type Action =
   | "link"
   | "hr"
   | "date"
+  | "table"
+  | "math"
+  | "mathBlock"
   | "indent"
   | "outdent";
 
@@ -86,6 +94,12 @@ function runAction(s: EditState, a: Action): EditState {
       return insertBlock(s, "---\n");
     case "date":
       return insertText(s, formatTimestamp(new Date()));
+    case "table":
+      return insertTable(s);
+    case "math":
+      return insertMath(s);
+    case "mathBlock":
+      return insertMathBlock(s);
     case "indent":
       return indentLines(s);
     case "outdent":
@@ -121,6 +135,11 @@ const TOOL_GROUPS: ToolDef[][] = [
     { action: "indent", label: "⇥", title: "Increase indent (Tab in a list)" },
   ],
   [
+    { action: "table", label: "⊞", title: "Table (with lines selected, they become the rows)" },
+    { action: "math", label: "x²", title: `Maths formula (${MOD}+Shift+M)` },
+    { action: "mathBlock", label: "∑", title: "Maths block — full-size fractions & sums" },
+  ],
+  [
     { action: "quote", label: "❝", title: "Quote" },
     { action: "codeblock", label: "{ }", title: "Code block" },
     { action: "link", label: "🔗", title: `Link (${MOD}+K)` },
@@ -136,8 +155,9 @@ const SHORTCUTS: Array<[string, string]> = [
   [`${MOD}+K`, "Link (or paste a URL over selected text)"],
   [`${MOD}+${ALT}+1 / 2 / 3`, "Heading 1 / 2 / 3"],
   [`${MOD}+Shift+8 / 7 / 9`, "Bullets / numbers / tasks"],
-  ["Enter", "Continue a list · on an empty item, end it"],
-  ["Tab / Shift+Tab", "Indent / outdent list items"],
+  [`${MOD}+Shift+M`, "Maths formula ($…$)"],
+  ["Enter", "Continue a list or table row · on an empty one, end it"],
+  ["Tab / Shift+Tab", "Jump between table cells · indent list items"],
   [`${MOD}+Z / ${MOD}+Shift+Z`, "Undo / redo"],
   [`${MOD}+F`, "Find & replace"],
   [`${MOD}+Shift+D`, "Insert date & time"],
@@ -151,6 +171,9 @@ const SYNTAX: Array<[string, string]> = [
   ["# Heading  ## Smaller", "Headings"],
   ["- item   1. item", "Lists"],
   ["- [ ] task   - [x] done", "Tick-able tasks"],
+  ["| a | b |  over  | --- | --- |", "Table (⊞ inserts one)"],
+  ["$x^2$   $H_{2}O$   $\\frac{a}{b}$", "Maths, inline"],
+  ["$$ … $$ on its own lines", "Maths block"],
   ["> quote", "Quote"],
   ["[label](https://…)", "Link"],
   ["---", "Divider"],
@@ -390,6 +413,7 @@ export function RichTextEditor({
       else if (key === "s" && e.shiftKey) apply("strike");
       else if (key === "h" && e.shiftKey) apply("highlight");
       else if (key === "d" && e.shiftKey) apply("date");
+      else if (key === "m" && e.shiftKey) apply("math");
       else if (e.shiftKey && e.code === "Digit8") apply("bullet");
       else if (e.shiftKey && e.code === "Digit7") apply("number");
       else if (e.shiftKey && e.code === "Digit9") apply("task");
@@ -412,6 +436,13 @@ export function RichTextEditor({
 
     if (e.key === "Tab" && !mod && !e.altKey) {
       const s = state();
+      // Inside a table, Tab walks through the cells.
+      const cell = tableCellNav(s, e.shiftKey ? -1 : 1);
+      if (cell) {
+        e.preventDefault();
+        commit(cell);
+        return;
+      }
       const multiLine = value.slice(s.start, s.end).includes("\n");
       // Only inside lists or across several lines, so Tab still moves focus elsewhere.
       if (multiLine || inListItem(s)) {
@@ -422,7 +453,7 @@ export function RichTextEditor({
     }
 
     if (e.key === "Enter" && !mod && !e.shiftKey && !e.altKey) {
-      const next = continueList(state());
+      const next = continueList(state()) ?? continueTable(state());
       if (next) {
         e.preventDefault();
         commit(next);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   continueList,
+  continueTable,
   cursorPosition,
   EditHistory,
   findMatches,
@@ -8,7 +9,11 @@ import {
   inListItem,
   insertCodeBlock,
   insertLink,
+  insertMath,
+  insertMathBlock,
+  insertTable,
   replaceAll,
+  tableCellNav,
   textStats,
   toggleHeading,
   toggleLineFormat,
@@ -178,5 +183,88 @@ describe("EditHistory", () => {
     h.undo(s("b"));
     h.record(s("a"), "action", 10);
     expect(h.canRedo).toBe(false);
+  });
+});
+
+describe("tables", () => {
+  const T = "| a | b |\n| --- | --- |\n| c | d |";
+  /** A one-character selection over `ch` inside T. */
+  const inCell = (ch: string): EditState => {
+    const p = T.indexOf(ch);
+    return { value: T, start: p, end: p + 1 };
+  };
+
+  it("inserts a starter table with its first header cell selected", () => {
+    const s = insertTable(at("write |"));
+    expect(s.value).toBe("write \n| Column A | Column B |\n| --- | --- |\n|  |  |\n|  |  |");
+    expect(show(s)).toBe("write \n| [Column A] | Column B |\n| --- | --- |\n|  |  |\n|  |  |");
+  });
+
+  it("turns selected lines into rows, the first into the header", () => {
+    expect(insertTable(at("Team\n[Alice\nBob\nCarol]")).value).toBe(
+      "Team\n| Alice |\n| --- |\n| Bob |\n| Carol |",
+    );
+  });
+
+  it("splits a single selected line on pipes into header columns", () => {
+    const s = insertTable({ value: "Name | Rank", start: 0, end: 11 });
+    expect(s.value).toBe("| Name | Rank |\n| --- | --- |\n|   |   |");
+    expect(show(s)).toBe("| [Name] | Rank |\n| --- | --- |\n|   |   |");
+  });
+
+  it("tabs between cells, wrapping around the table", () => {
+    expect(show(tableCellNav(inCell("a"), 1)!)).toBe(
+      "| a | [b] |\n| --- | --- |\n| c | d |",
+    );
+    expect(show(tableCellNav(inCell("d"), 1)!)).toBe(
+      "| [a] | b |\n| --- | --- |\n| c | d |",
+    );
+    expect(show(tableCellNav(inCell("a"), -1)!)).toBe(
+      "| a | b |\n| --- | --- |\n| c | [d] |",
+    );
+  });
+
+  it("skips the divider row and ignores text that isn't a table", () => {
+    // Cursor in the divider's dashes: Tab lands in the first body cell.
+    const divider = T.indexOf("---") + 1;
+    expect(show(tableCellNav({ value: T, start: divider, end: divider + 1 }, 1)!)).toBe(
+      "| a | b |\n| --- | --- |\n| [c] | d |",
+    );
+    expect(tableCellNav({ value: "just a | sentence", start: 9, end: 9 }, 1)).toBeNull();
+    // Pipes without a divider aren't a table either.
+    expect(tableCellNav({ value: "x | y\nz | w", start: 0, end: 0 }, 1)).toBeNull();
+  });
+
+  it("continues a table with an empty row, cursor in its first cell", () => {
+    const p = T.indexOf("c") + 1; // a bare cursor just after the c
+    expect(show(continueTable({ value: T, start: p, end: p })!)).toBe(
+      "| a | b |\n| --- | --- |\n| c | d |\n| |  |   |",
+    );
+  });
+
+  it("ends the table when Enter hits an empty row", () => {
+    const src = "| a | b |\n| --- | --- |\n|   |   |";
+    // The empty bottom row's first cell.
+    const s = continueTable({ value: src, start: 26, end: 26 });
+    expect(s!.value).toBe("| a | b |\n| --- | --- |");
+    expect(s!.start).toBe(23);
+  });
+});
+
+describe("maths", () => {
+  it("wraps the selection in $…$, and unwraps it again", () => {
+    const s = insertMath(at("say [E = mc^2] loudly"));
+    expect(show(s)).toBe("say $[E = mc^2]$ loudly");
+    expect(show(insertMath(s))).toBe("say [E = mc^2] loudly");
+    // A fresh cursor inserts a formula to edit.
+    expect(show(insertMath(at("x |")))).toBe("x $[x^2]$");
+  });
+
+  it("puts the selection into a $$ block, or inserts a sample", () => {
+    const s = insertMathBlock(at("sum:\n[a^2 + b^2 = c^2]"));
+    expect(s.value).toBe("sum:\n$$\na^2 + b^2 = c^2\n$$");
+    const fresh = insertMathBlock(at("|"));
+    expect(fresh.value).toBe("$$\n\\frac{a}{b}\n$$");
+    expect(show(fresh)).toBe("$$\n[\\frac{a}{b}]\n$$");
   });
 });

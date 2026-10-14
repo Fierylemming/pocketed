@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from "react";
 import { parseMarkdown, type Block, type Inline, type ListBlock } from "../markdown";
+import { MathSpan } from "./MathView";
 
 /**
  * Shows a note body with its formatting. Built from React elements only (no
@@ -60,11 +61,48 @@ function renderBlock(
           <code>{b.text}</code>
         </pre>
       );
+    case "mathblock":
+      return (
+        <div key={key} className="md-math-block">
+          <MathSpan tex={b.tex} display />
+        </div>
+      );
+    case "table":
+      return (
+        <div key={key} className="md-table-wrap">
+          <table className="md-table">
+            <thead>
+              <tr>
+                {b.header.map((cell, c) => (
+                  <th key={c} className={alignClass(b.align[c])}>
+                    {renderInline(cell, hl)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((row, r) => (
+                <tr key={r}>
+                  {row.map((cell, c) => (
+                    <td key={c} className={alignClass(b.align[c])}>
+                      {renderInline(cell, hl)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
     case "hr":
       return <hr key={key} className="md-hr" />;
     case "list":
       return renderList(b, key, onToggleTask, hl);
   }
+}
+
+function alignClass(align: "left" | "center" | "right" | null | undefined): string | undefined {
+  return align ? `md-align-${align}` : undefined;
 }
 
 function renderList(
@@ -142,6 +180,8 @@ function renderInline(nodes: Inline[], hl: string): ReactNode[] {
             {n.text}
           </code>
         );
+      case "math":
+        return <MathSpan key={i} tex={n.tex} display={n.display} />;
       case "strong":
         return <strong key={i}>{renderInline(n.children, hl)}</strong>;
       case "em":
