@@ -21,7 +21,7 @@ beforeEach(() => {
   localStorage.clear();
   delete document.documentElement.dataset.theme;
   delete document.documentElement.dataset.themePreference;
-  document.head.innerHTML = '<meta name="theme-color" content="#f3f6fa">';
+  document.head.innerHTML = '<meta name="theme-color" content="#f4f6f8">';
   dark = false;
   systemListeners = new Set();
   vi.stubGlobal("matchMedia", () => ({
@@ -47,7 +47,7 @@ describe("colour themes", () => {
     systemTheme(true);
     expect(theme()).toBe("dark");
     expect(document.documentElement.style.colorScheme).toBe("dark");
-    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute("content")).toBe("#101b2b");
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute("content")).toBe("#0c1014");
     systemTheme(false); expect(theme()).toBe("light");
   });
 

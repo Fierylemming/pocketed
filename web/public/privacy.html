@@ -3,25 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f3f6fa" />
+    <meta name="theme-color" content="#f4f6f8" />
     <script src="/theme-init.js"></script>
     <link rel="icon" href="/icons/pocketed.svg" type="image/svg+xml" />
     <title>Pocketed · Privacy policy</title>
     <style>
-      :root { color-scheme: light; --bg: #f3f6fa; --card: #fff; --text: #1b2d43; --muted: #5f6e81; --accent: #08787a; --line: #e3e9ef; }
-      :root[data-theme="dark"] { color-scheme: dark; --bg: #101b2b; --card: #19283b; --text: #edf2f8; --muted: #afbed0; --accent: #66d3c5; --line: #2a3b50; }
+      :root { color-scheme: light; --bg: #f4f6f8; --card: #fff; --text: #0f141b; --muted: #4e5a67; --accent: #0a6b5e; --line: #e3e7eb; }
+      :root[data-theme="dark"] { color-scheme: dark; --bg: #0c1014; --card: #141a20; --text: #e8ecf1; --muted: #9ca8b4; --accent: #41cfae; --line: #232c36; }
       body {
         margin: 0;
         background: var(--bg);
         color: var(--text);
-        font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+        -webkit-font-smoothing: antialiased;
       }
-      main { max-width: 44rem; margin: 3rem auto; padding: 2.5rem; background: var(--card); border: 1px solid var(--line); border-radius: 1rem; }
+      main { max-width: 44rem; margin: 3rem auto; padding: 2.5rem; background: var(--card); border: 1px solid var(--line); border-radius: 1rem; box-shadow: 0 1px 2px rgba(15, 23, 32, 0.05); }
       @media(max-width: 768px) { main { padding: 1.5rem; margin: 1rem; } }
-      h1 { font-size: 2rem; line-height: 1.2; letter-spacing: -0.04em; margin: 2rem 0 0.6rem; }
-      h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; }
+      h1 { font-size: 1.9rem; line-height: 1.25; letter-spacing: -0.035em; margin: 2rem 0 0.6rem; }
+      h2 { font-size: 1.05rem; letter-spacing: -0.015em; margin: 2rem 0 0.5rem; }
       a { color: var(--accent); text-underline-offset: 3px; }
-      a:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+      a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
       .muted { color: var(--muted); font-size: 0.9rem; }
       li { margin: 0.25rem 0; }
     </style>
