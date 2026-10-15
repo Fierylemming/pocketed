@@ -690,6 +690,8 @@ input[type="checkbox"] { width: auto; min-height: 1rem; box-shadow: none; accent
 .block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
 .block-head .muted { margin: 0; font-size: 0.75rem; }
 .block-title { margin: 0; font-size: 0.95rem; font-weight: 650; color: var(--text); letter-spacing: -0.015em; }
+.sort-control { display: inline-flex; align-items: center; gap: 0.4rem; flex: none; font-size: 0.75rem; font-weight: 550; color: var(--text-2); }
+.sort-control select { width: auto; min-width: 8.5rem; min-height: 2rem; padding: 0.3rem 0.5rem; font-size: 0.78rem; box-shadow: none; }
 .section { display: flex; flex-direction: column; gap: 0.85rem; scroll-margin-top: 6rem; }
 .section.due .block-title { color: var(--danger); }
 .section-title { margin: 0; font-size: 1rem; font-weight: 650; }
@@ -1907,7 +1909,13 @@ button.rte-btn code { font-size: 0.72rem; background: none; padding: 0; }
   border-radius: 0;
   box-shadow: none;
   resize: none;
-  overflow: hidden;
+  /* Grow with the text only so far: past most of the screen the box stops
+     growing and scrolls internally. An ever-taller box made the page jump
+     around the line being typed in long notes and hid it. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: 60vh;
+  max-height: 60dvh;
   min-height: 7rem;
   padding: var(--rte-pad-y) var(--rte-pad-x);
 }
@@ -1963,7 +1971,7 @@ body.rte-focus-lock { overflow: hidden; }
 .rte-focus .rte-surface-wrap, .rte-focus .rte-preview { max-width: 46rem; margin: 1.5rem auto 4rem; }
 .rte.rte-focus { --rte-pad-x: 1.25rem; }
 .rte-focus .rte-surface { font-size: 1.05rem; line-height: 1.75; }
-.rte-focus .rte-textarea { min-height: 60vh; }
+.rte-focus .rte-textarea { min-height: min(60vh, calc(100dvh - 16rem)); max-height: calc(100dvh - 16rem); }
 .rte-focus .rte-find, .rte-focus .rte-help { max-width: 46rem; width: 100%; margin: 0 auto; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); }
 .rte-focus .rte-status { justify-content: center; gap: 2rem; }
 

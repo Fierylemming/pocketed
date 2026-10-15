@@ -179,6 +179,105 @@ const SYNTAX: Array<[string, string]> = [
   ["---", "Divider"],
 ];
 
+/* ---- Keeping the line being typed on screen ----
+ *
+ * The editor used to be resized by collapsing the textarea to its `rows`
+ * height and then growing it back on every render. When the note was taller
+ * than the screen, the browser clamped the page's scroll position while the
+ * box was collapsed and never put it back — so the page jumped and the line
+ * being typed slid out of view. Three things together stop that:
+ *
+ *  1. The textarea only grows up to most of the viewport (see styles.css);
+ *     past that it scrolls internally, like any other text box.
+ *  2. Resizing remembers every scroll position around the editor and puts
+ *     them back before the browser paints, and only runs when the text,
+ *     width or font actually changed — not on unrelated re-renders (a sync,
+ *     the 30-second clock, a draft saving…).
+ *  3. After a resize, the caret is scrolled back into view if it has slipped
+ *     outside the textarea (or outside the page's scroll area).
+ */
+
+function scrollAncestors(ta: HTMLTextAreaElement): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  for (let el = ta.parentElement; el; el = el.parentElement) out.push(el);
+  const scrolling = document.scrollingElement;
+  if (scrolling instanceof HTMLElement && !out.includes(scrolling)) out.push(scrolling);
+  return out;
+}
+
+/** Where the caret sits inside the textarea's text, measured with a hidden mirror. */
+function caretInContent(ta: HTMLTextAreaElement): { top: number; height: number } | null {
+  if (ta.selectionStart == null) return null;
+  try {
+    const style = getComputedStyle(ta);
+    const mirror = document.createElement("div");
+    mirror.style.position = "absolute";
+    mirror.style.visibility = "hidden";
+    mirror.style.left = "-9999px";
+    mirror.style.top = "0";
+    mirror.style.width = `${ta.clientWidth}px`;
+    mirror.style.boxSizing = "border-box";
+    mirror.style.padding = style.padding;
+    mirror.style.borderWidth = style.borderWidth;
+    mirror.style.fontFamily = style.fontFamily;
+    mirror.style.fontSize = style.fontSize;
+    mirror.style.fontStyle = style.fontStyle;
+    mirror.style.fontWeight = style.fontWeight;
+    mirror.style.lineHeight = style.lineHeight;
+    mirror.style.letterSpacing = style.letterSpacing;
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.overflowWrap = "break-word";
+    mirror.style.wordWrap = "break-word";
+    mirror.style.tabSize = style.tabSize;
+    const marker = document.createElement("span");
+    marker.textContent = "\u200b";
+    mirror.textContent = ta.value.slice(0, ta.selectionStart);
+    mirror.append(marker);
+    document.body.append(mirror);
+    const top = marker.offsetTop;
+    const height =
+      marker.offsetHeight ||
+      parseFloat(style.lineHeight) ||
+      parseFloat(style.fontSize) * 1.65 ||
+      24;
+    mirror.remove();
+    return { top, height };
+  } catch {
+    return null;
+  }
+}
+
+/** Scrolls the caret back into view after the box has been resized. */
+export function ensureCaretVisible(ta: HTMLTextAreaElement): void {
+  if (document.activeElement !== ta) return;
+  const caret = caretInContent(ta);
+  if (!caret) return;
+  const pad = 10;
+  // The textarea is scrolling its own text (a long note): keep the caret in it.
+  if (ta.scrollHeight > ta.clientHeight + 1) {
+    if (caret.top < ta.scrollTop + pad) {
+      ta.scrollTop = Math.max(0, caret.top - pad);
+    } else if (caret.top + caret.height > ta.scrollTop + ta.clientHeight - pad) {
+      ta.scrollTop = caret.top + caret.height - ta.clientHeight + pad;
+    }
+    return;
+  }
+  // Otherwise the caret rides with the page: keep it inside the scroll area.
+  const scroller =
+    scrollAncestors(ta).find((el) => {
+      const overflow = getComputedStyle(el).overflowY;
+      return /(auto|scroll|overlay)/.test(overflow) && el.scrollHeight > el.clientHeight;
+    }) ?? (document.scrollingElement as HTMLElement | null);
+  if (!scroller) return;
+  const box = scroller.getBoundingClientRect();
+  const taBox = ta.getBoundingClientRect();
+  if (!box.height || !taBox.height) return; // no layout (e.g. a test DOM): nothing to do
+  const top = taBox.top + caret.top - ta.scrollTop;
+  const bottom = top + caret.height;
+  if (bottom > box.bottom - pad) scroller.scrollTop += bottom - (box.bottom - pad);
+  else if (top < box.top + pad) scroller.scrollTop -= box.top + pad - top;
+}
+
 export interface RichTextEditorProps {
   value: string;
   onChange: (value: string) => void;
@@ -209,6 +308,8 @@ export function RichTextEditor({
   const lastValue = useRef(value);
   const sel = useRef<[number, number]>([value.length, value.length]);
   const pendingSel = useRef<[number, number] | null>(null);
+  const lastSizingKey = useRef<string | null>(null);
+  const lastSizedElement = useRef<HTMLTextAreaElement | null>(null);
 
   const [, bump] = useState(0);
   const [mode, setMode] = useState<"write" | "preview">("write");
@@ -239,12 +340,53 @@ export function RichTextEditor({
 
   const stats = textStats(value);
 
-  /* ---- sizing: the box grows with its text, like a page ---- */
-  function resize() {
+  /* ---- sizing: the box grows with its text, up to the cap in styles.css ---- */
+
+  function syncBackdrop() {
+    const ta = taRef.current;
+    const backdrop = backdropRef.current;
+    if (!ta || !backdrop) return;
+    // The mirror behind the textarea must wrap exactly where it does, and
+    // follow it when a long note scrolls inside the box.
+    if (ta.clientWidth > 0) backdrop.style.width = `${ta.clientWidth}px`;
+    if (ta.clientHeight > 0) backdrop.style.height = `${ta.clientHeight}px`;
+    backdrop.scrollTop = ta.scrollTop;
+    backdrop.scrollLeft = ta.scrollLeft;
+  }
+
+  function resize(force = false) {
     const ta = taRef.current;
     if (!ta) return;
+    const style = getComputedStyle(ta);
+    const key = [
+      ta.value,
+      ta.clientWidth,
+      ta.rows,
+      style.fontSize,
+      style.lineHeight,
+      focusMode ? "focus" : "inline",
+    ].join("\0");
+    if (!force && lastSizedElement.current === ta && lastSizingKey.current === key) {
+      syncBackdrop();
+      return;
+    }
+    lastSizedElement.current = ta;
+    lastSizingKey.current = key;
+    // Measuring needs the collapsed box, but that must never move the page:
+    // remember every scroll position first and put them all back afterwards,
+    // still inside this layout pass, before anything is painted.
+    const saved = scrollAncestors(ta).map(
+      (el) => [el, el.scrollTop, el.scrollLeft] as const,
+    );
     ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight + 2}px`;
+    const next = `${ta.scrollHeight + 2}px`;
+    if (ta.style.height !== next) ta.style.height = next;
+    for (const [el, top, left] of saved) {
+      el.scrollTop = top;
+      el.scrollLeft = left;
+    }
+    syncBackdrop();
+    ensureCaretVisible(ta);
   }
 
   useLayoutEffect(() => {
@@ -257,11 +399,12 @@ export function RichTextEditor({
       ta.setSelectionRange(s, e);
       sel.current = [s, e];
       setCursor(cursorPosition(ta.value, s));
+      ensureCaretVisible(ta);
     }
   });
 
   useEffect(() => {
-    const onResize = () => resize();
+    const onResize = () => resize(true);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -285,7 +428,17 @@ export function RichTextEditor({
   useEffect(() => {
     if (current < 0) return;
     const el = backdropRef.current?.querySelector(".rte-hit.current");
-    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const backdrop = backdropRef.current;
+    const ta = taRef.current;
+    if (el instanceof HTMLElement && backdrop && ta) {
+      // Bring the editor box itself into view, then scroll the text (and its
+      // highlight mirror, together) so the match is the line on screen.
+      ta.scrollIntoView?.({ block: "nearest" });
+      backdrop.scrollTop = Math.max(0, el.offsetTop - backdrop.clientHeight / 3);
+      ta.scrollTop = backdrop.scrollTop;
+    } else {
+      el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
   }, [current, findQuery]);
 
   function state(): EditState {
@@ -741,6 +894,7 @@ export function RichTextEditor({
               onChange={(e) => handleTyping(e.target.value)}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
+              onScroll={syncBackdrop}
               onSelect={trackSelection}
               onKeyUp={trackSelection}
               onClick={trackSelection}
