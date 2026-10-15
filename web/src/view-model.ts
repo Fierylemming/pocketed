@@ -10,12 +10,16 @@ import {
   REMINDER_COLORS,
   childSections,
   descendantSectionIds,
+  flattenSectionTree,
+  itemTitle,
   repeatLabel,
   sectionPathLabel,
   sortNotes,
+  sortSections,
   visibleSections,
   type Note,
   type ReminderColorDef,
+  type SectionTreeRow,
   type ReminderColorId,
   type Section,
 } from "@pocketed/shared";
@@ -27,6 +31,111 @@ export function rowsFor(manager: SyncManager): Note[] {
 
 export function userSectionsFor(manager: SyncManager): Section[] {
   return visibleSections(manager.state);
+}
+
+/* ---- Display ordering (a device preference; the stored order never changes) ---- */
+
+export type SectionSortOrder = "added" | "name-asc" | "name-desc" | "newest-first";
+export type NoteSortOrder =
+  | "recently-edited"
+  | "title-asc"
+  | "title-desc"
+  | "newest-first"
+  | "oldest-first";
+
+export const SECTION_SORT_OPTIONS: readonly { id: SectionSortOrder; label: string }[] = [
+  { id: "added", label: "Date added" },
+  { id: "name-asc", label: "Name A–Z" },
+  { id: "name-desc", label: "Name Z–A" },
+  { id: "newest-first", label: "Newest first" },
+];
+
+export const NOTE_SORT_OPTIONS: readonly { id: NoteSortOrder; label: string }[] = [
+  { id: "recently-edited", label: "Recently edited" },
+  { id: "title-asc", label: "Title A–Z" },
+  { id: "title-desc", label: "Title Z–A" },
+  { id: "newest-first", label: "Newest first" },
+  { id: "oldest-first", label: "Oldest first" },
+];
+
+export function isSectionSortOrder(value: unknown): value is SectionSortOrder {
+  return SECTION_SORT_OPTIONS.some((o) => o.id === value);
+}
+
+export function isNoteSortOrder(value: unknown): value is NoteSortOrder {
+  return NOTE_SORT_OPTIONS.some((o) => o.id === value);
+}
+
+/**
+ * Natural, case-insensitive ordering: numbers inside a name compare by value,
+ * so "Item 2" comes before "Item 10" (plain alphabetical order would not).
+ */
+const naturalCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function stableId(a: { id: string }, b: { id: string }): number {
+  return a.id.localeCompare(b.id);
+}
+
+/** Sections in the chosen display order. "added" is the usual oldest-first order. */
+export function sortSectionsByOrder(
+  sections: readonly Section[],
+  order: SectionSortOrder,
+): Section[] {
+  if (order === "added") return sortSections([...sections]);
+  return [...sections].sort((a, b) => {
+    if (order === "name-asc") return naturalCollator.compare(a.name, b.name) || stableId(a, b);
+    if (order === "name-desc") return naturalCollator.compare(b.name, a.name) || stableId(a, b);
+    return b.createdAt - a.createdAt || stableId(a, b);
+  });
+}
+
+export function sortedChildSections(
+  sections: readonly Section[],
+  parentId: string | null,
+  order: SectionSortOrder,
+): Section[] {
+  return sortSectionsByOrder(childSections(sections, parentId), order);
+}
+
+/** The section tree flattened depth-first, with every level in the chosen order. */
+export function sortedSectionTree(
+  sections: readonly Section[],
+  order: SectionSortOrder,
+): SectionTreeRow[] {
+  if (order === "added") return flattenSectionTree(sections);
+  const out: SectionTreeRow[] = [];
+  const walk = (parentId: string | null, depth: number) => {
+    for (const section of sortedChildSections(sections, parentId, order)) {
+      out.push({
+        section,
+        depth,
+        childCount: childSections(sections, section.id).length,
+      });
+      walk(section.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
+/**
+ * Notes in the chosen display order. Pinned notes stay at the top in every
+ * order — pinning is an explicit "keep this first" — and the default is the
+ * usual pinned-then-recently-edited order.
+ */
+export function sortNotesByOrder(notes: readonly Note[], order: NoteSortOrder): Note[] {
+  if (order === "recently-edited") return sortNotes([...notes]);
+  return [...notes].sort((a, b) => {
+    const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+    if (pinDiff !== 0) return pinDiff;
+    if (order === "title-asc") return naturalCollator.compare(itemTitle(a), itemTitle(b)) || stableId(a, b);
+    if (order === "title-desc") return naturalCollator.compare(itemTitle(b), itemTitle(a)) || stableId(a, b);
+    if (order === "newest-first") return b.createdAt - a.createdAt || stableId(a, b);
+    return a.createdAt - b.createdAt || stableId(a, b);
+  });
 }
 
 export interface Sections {
@@ -63,6 +172,7 @@ export interface FolderContents {
 export function itemsInSection(
   allNotes: Note[],
   sectionId: string | null,
+  noteOrder: NoteSortOrder = "recently-edited",
 ): FolderContents {
   const inFolder = allNotes.filter(
     (n) => !n.deleted && (n.sectionId ?? null) === sectionId,
@@ -77,7 +187,7 @@ export function itemsInSection(
       if (b.reminderAt != null) return 1;
       return b.updatedAt - a.updatedAt;
     });
-  const notes = sortNotes(inFolder.filter((n) => !isReminderItem(n)));
+  const notes = sortNotesByOrder(inFolder.filter((n) => !isReminderItem(n)), noteOrder);
   return { reminders, notes };
 }
 

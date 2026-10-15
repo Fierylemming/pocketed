@@ -108,6 +108,10 @@ On iPhone: Safari → Share → **Add to Home Screen**.
 ## Features: Sections, Notes & Reminders Calendar
 
 - **Sections (Folders)** — create named sections on the home screen and click any section title to open its dedicated folder view.
+- **Sorting** — the **Sort** control beside Sections, Subsections and a folder's Notes reorders each list by
+  date added, name/title A–Z or Z–A, or newest/oldest first. Name ordering is alphanumeric, so “Item 2”
+  comes before “Item 10”. Each choice is remembered on that device; it only changes how lists are shown,
+  never the stored or synced order. Notes you have pinned stay at the top, and reminders stay in due-time order.
 - **Two Separate Creation Buttons** — choose between **📝 New Note** and **⏰ New Reminder**:
   - **Notes** are large items with a title, a large formatted body (see "Writing notes" below), image uploads (with fullscreen lightbox preview), interactive checklists, pinning, and an expandable detail view.
   - **Reminders** are compact items with a title, short body text, a **📍 Location** tab (with quick presets or custom text), a due date/time, and a colour from Google Calendar's palette.

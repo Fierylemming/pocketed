@@ -10,7 +10,6 @@ import {
 import {
   addSection,
   canMoveSection,
-  childSections,
   createNoteItem,
   createReminderItem,
   DEFAULT_REMINDER_COLOR,
@@ -52,7 +51,15 @@ import {
 import { fileToDataUrl } from "../images";
 import {
   folderSummary,
+  isNoteSortOrder,
+  isSectionSortOrder,
   itemsInSection,
+  NOTE_SORT_OPTIONS,
+  SECTION_SORT_OPTIONS,
+  sortedChildSections,
+  sortedSectionTree,
+  type NoteSortOrder,
+  type SectionSortOrder,
   itemsWithinSection,
   matchesQuery,
   reminderMeta,
@@ -79,6 +86,8 @@ import { useDialog } from "../use-dialog";
 
 const DISMISS_INSTALL_KEY = "pocketed.v2.installDismissed";
 const EXPANDED_SECTIONS_KEY = "pocketed.v2.expandedSections";
+const SECTION_SORT_KEY = "pocketed.v2.sectionSort";
+const NOTE_SORT_KEY = "pocketed.v2.noteSort";
 /** Unsaved new note, kept on this device so a reload or section switch doesn't lose it. */
 const NOTE_DRAFT_KEY = "pocketed.v2.noteDraft";
 
@@ -136,6 +145,24 @@ function loadExpandedSections(): Set<string> {
     return new Set();
   }
 }
+function loadSectionSortOrder(): SectionSortOrder {
+  try {
+    const value = localStorage.getItem(SECTION_SORT_KEY);
+    return isSectionSortOrder(value) ? value : "added";
+  } catch {
+    return "added";
+  }
+}
+
+function loadNoteSortOrder(): NoteSortOrder {
+  try {
+    const value = localStorage.getItem(NOTE_SORT_KEY);
+    return isNoteSortOrder(value) ? value : "recently-edited";
+  } catch {
+    return "recently-edited";
+  }
+}
+
 const PRESET_LOCATIONS = ["Home", "Work", "Office", "Supermarket", "Gym", "School"];
 
 export const GENERAL_SECTION_ID = "__general__";
@@ -176,6 +203,10 @@ export function Notes({
   const [sidebarSectionName, setSidebarSectionName] = useState("");
   // Which sections are unfolded in the sidebar tree (remembered on this device)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(loadExpandedSections);
+  // Display-only ordering, remembered on this device. The stored creation
+  // order (and everything synced) is untouched.
+  const [sectionSort, setSectionSort] = useState<SectionSortOrder>(loadSectionSortOrder);
+  const [noteSort, setNoteSort] = useState<NoteSortOrder>(loadNoteSortOrder);
   // "Move section" picker on a section page
   const [movingSectionId, setMovingSectionId] = useState<string | null>(null);
 
@@ -277,6 +308,24 @@ export function Notes({
     setNewSectionName("");
   }
 
+  function changeSectionSort(order: SectionSortOrder) {
+    setSectionSort(order);
+    try {
+      localStorage.setItem(SECTION_SORT_KEY, order);
+    } catch {
+      /* storage full or unavailable: keep the choice for this visit */
+    }
+  }
+
+  function changeNoteSort(order: NoteSortOrder) {
+    setNoteSort(order);
+    try {
+      localStorage.setItem(NOTE_SORT_KEY, order);
+    } catch {
+      /* storage full or unavailable: keep the choice for this visit */
+    }
+  }
+
   function setExpanded(id: string, open: boolean) {
     setExpandedSections((prev) => {
       if (prev.has(id) === open) return prev;
@@ -367,8 +416,10 @@ export function Notes({
   // Badges name the full path ("Work › Projects") so nested folders are unambiguous.
   const pathNamedSections = sectionsWithPathNames(userSections);
   const sectionMap = new Map(pathNamedSections.map((s) => [s.id, s]));
-  const topSections = childSections(userSections, null);
-  const subSections = activeSectionObj ? childSections(userSections, activeSectionObj.id) : [];
+  const topSections = sortedChildSections(userSections, null, sectionSort);
+  const subSections = activeSectionObj
+    ? sortedChildSections(userSections, activeSectionObj.id, sectionSort)
+    : [];
 
   function renderReminderCard(note: Note, sectionBadge?: Section | null) {
     if (editing === note.id) {
@@ -436,12 +487,22 @@ export function Notes({
         aria-label={isHome ? "Sections" : "Subsections"}
       >
         <div className="block-head">
-          <h2 className="block-title">{isHome ? "Sections" : "Subsections"}</h2>
-          <p className="muted small">
-            {isHome
-              ? "Bring a little structure to your everyday."
-              : `Folders inside ${parentName}. They can have subsections of their own.`}
-          </p>
+          <div>
+            <h2 className="block-title">{isHome ? "Sections" : "Subsections"}</h2>
+            <p className="muted small">
+              {isHome
+                ? "Bring a little structure to your everyday."
+                : `Folders inside ${parentName}. They can have subsections of their own.`}
+            </p>
+          </div>
+          {list.length > 1 && (
+            <SortControl
+              label={isHome ? "Sort sections" : "Sort subsections"}
+              value={sectionSort}
+              options={SECTION_SORT_OPTIONS}
+              onChange={changeSectionSort}
+            />
+          )}
         </div>
 
         <form className="section-create-form" onSubmit={handleCreateSection}>
@@ -700,7 +761,7 @@ export function Notes({
             {(() => {
               // The section tree, depth-first; rows under a folded section are skipped.
               let hiddenBelow = Infinity;
-              return flattenSectionTree(userSections).map(({ section: sec, depth, childCount }) => {
+              return sortedSectionTree(userSections, sectionSort).map(({ section: sec, depth, childCount }) => {
                 if (depth > hiddenBelow) return null;
                 const open = expandedSections.has(sec.id);
                 hiddenBelow = childCount > 0 && !open ? depth : Infinity;
@@ -1022,6 +1083,8 @@ export function Notes({
                 sectionId={targetSectionId}
                 sectionName={activeSectionObj ? activeSectionObj.name : "General"}
                 hasSubsections={subSections.length > 0}
+                noteSort={noteSort}
+                onNoteSortChange={changeNoteSort}
                 renderReminderCard={(n) => renderReminderCard(n, null)}
                 renderNoteCard={(n) => renderNoteCard(n, null)}
               />
@@ -1133,6 +1196,8 @@ function SectionFolderContent({
   sectionId,
   sectionName,
   hasSubsections = false,
+  noteSort,
+  onNoteSortChange,
   renderReminderCard,
   renderNoteCard,
 }: {
@@ -1140,10 +1205,12 @@ function SectionFolderContent({
   sectionId: string | null;
   sectionName: string;
   hasSubsections?: boolean;
+  noteSort: NoteSortOrder;
+  onNoteSortChange: (order: NoteSortOrder) => void;
   renderReminderCard: (n: Note) => ReactNode;
   renderNoteCard: (n: Note) => ReactNode;
 }) {
-  const { reminders, notes } = itemsInSection(allNotes, sectionId);
+  const { reminders, notes } = itemsInSection(allNotes, sectionId, noteSort);
 
   if (reminders.length === 0 && notes.length === 0) {
     return (
@@ -1167,7 +1234,19 @@ function SectionFolderContent({
         </SectionBlock>
       )}
       {notes.length > 0 && (
-        <SectionBlock title={`Notes (${notes.length})`}>
+        <SectionBlock
+          title={`Notes (${notes.length})`}
+          action={
+            notes.length > 1 ? (
+              <SortControl
+                label="Sort notes"
+                value={noteSort}
+                options={NOTE_SORT_OPTIONS}
+                onChange={onNoteSortChange}
+              />
+            ) : undefined
+          }
+        >
           <ul className="notes">{notes.map((n) => renderNoteCard(n))}</ul>
         </SectionBlock>
       )}
@@ -2542,18 +2621,58 @@ function SectionBlock({
   title,
   tone,
   id,
+  action,
   children,
 }: {
   title: string;
   tone?: "due";
   id?: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className={"section " + (tone ?? "")} id={id}>
-      <h2 className="block-title">{title}</h2>
+      {action ? (
+        <div className="block-head">
+          <h2 className="block-title">{title}</h2>
+          {action}
+        </div>
+      ) : (
+        <h2 className="block-title">{title}</h2>
+      )}
       {children}
     </section>
+  );
+}
+
+/** A small "Sort: [select]" control. The label is also the select's accessible name. */
+function SortControl<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly { id: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <label className="sort-control">
+      <span aria-hidden="true">Sort</span>
+      <select
+        aria-label={label}
+        title={label}
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+      >
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

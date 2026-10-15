@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createNoteItem, createReminderItem, emptyState } from "@pocketed/shared";
+import { addSection, createNoteItem, createReminderItem, emptyState } from "@pocketed/shared";
 import { Notes } from "../src/components/Notes";
 import { SyncManager } from "../src/store";
 import { backend, CFG } from "./fake-google-accounts";
@@ -17,6 +17,13 @@ const button = (label: string) => {
 };
 async function render() { await act(async () => root.render(<Notes manager={manager} onNewCfg={() => {}} />)); }
 async function click(label: string) { await act(async () => button(label).click()); }
+async function choose(label: string, value: string) {
+  const select = host.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
 async function type(label: string, value: string) {
   const input = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
   await act(async () => {
@@ -111,5 +118,45 @@ describe("redesigned workspace", () => {
     await act(async () => dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(host.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(button("Settings"));
+  });
+});
+
+describe("sorting controls", () => {
+  it("sorts sections alphabetically with natural numbers, and remembers the choice", async () => {
+    const now = Date.now();
+    let state = emptyState();
+    state = addSection(state, "Section 10", now).state;
+    state = addSection(state, "Section 2", now + 1).state;
+    state = addSection(state, "Section 1", now + 2).state;
+    manager.state = state;
+    await render();
+    const titles = () => [...host.querySelectorAll(".sections-panel .section-folder-title")].map((el) => el.textContent);
+    expect(titles()).toEqual(["Section 10", "Section 2", "Section 1"]);
+    await choose("Sort sections", "name-asc");
+    expect(titles()).toEqual(["Section 1", "Section 2", "Section 10"]);
+    expect(localStorage.getItem("pocketed.v2.sectionSort")).toBe("name-asc");
+  });
+
+  it("sorts subsections and the notes inside a section", async () => {
+    const now = Date.now();
+    let state = emptyState();
+    const work = addSection(state, "Work", now); state = work.state;
+    state = addSection(state, "Sub 10", now + 1, work.section.id).state;
+    state = addSection(state, "Sub 2", now + 2, work.section.id).state;
+    state = createNoteItem(state, { title: "Note 10", body: "", sectionId: work.section.id }, now + 3).state;
+    state = createNoteItem(state, { title: "Note 1", body: "", sectionId: work.section.id }, now + 4).state;
+    state = createNoteItem(state, { title: "Note 2", body: "", sectionId: work.section.id }, now + 5).state;
+    manager.state = state;
+    await render();
+    await act(async () => host.querySelector<HTMLElement>(".sections-panel .section-folder-link")!.click());
+    const subTitles = () => [...host.querySelectorAll(".subsections-panel .section-folder-title")].map((el) => el.textContent);
+    const noteTitles = () => [...host.querySelectorAll(".large-note-title")].map((el) => el.textContent?.trim());
+    expect(subTitles()).toEqual(["Sub 10", "Sub 2"]);
+    expect(noteTitles()).toEqual(["Note 2", "Note 1", "Note 10"]); // recently edited
+    await choose("Sort subsections", "name-asc");
+    expect(subTitles()).toEqual(["Sub 2", "Sub 10"]);
+    await choose("Sort notes", "title-asc");
+    expect(noteTitles()).toEqual(["Note 1", "Note 2", "Note 10"]);
+    expect(localStorage.getItem("pocketed.v2.noteSort")).toBe("title-asc");
   });
 });

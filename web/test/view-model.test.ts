@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Note } from "@pocketed/shared";
+import type { Note, Section } from "@pocketed/shared";
 import {
   colorPickerChoices,
   colorsInUse,
@@ -8,6 +8,10 @@ import {
   reminderColorCounts,
   reminderMeta,
   sectionCounts,
+  sortNotesByOrder,
+  sortSectionsByOrder,
+  sortedChildSections,
+  sortedSectionTree,
   sectionsFor,
   syncStatus,
 } from "../src/view-model";
@@ -160,5 +164,65 @@ describe("Google Calendar colours", () => {
     const custom = colorPickerChoices("#123456");
     expect(custom).toHaveLength(25);
     expect(custom[0]).toMatchObject({ id: "#123456", label: "Custom" });
+  });
+});
+
+describe("display sorting", () => {
+  const sec = (id: string, name: string, createdAt: number, parentId: string | null = null): Section => ({
+    id,
+    name,
+    parentId,
+    createdAt,
+    updatedAt: createdAt,
+    deleted: false,
+  });
+
+  it("orders sections naturally, so Item 2 comes before Item 10", () => {
+    const list = [sec("s10", "Item 10", NOW + 3), sec("s2", "item 2", NOW + 2), sec("s1", "Item 1", NOW + 1)];
+    expect(sortSectionsByOrder(list, "added").map((x) => x.id)).toEqual(["s1", "s2", "s10"]);
+    expect(sortSectionsByOrder(list, "name-asc").map((x) => x.id)).toEqual(["s1", "s2", "s10"]);
+    expect(sortSectionsByOrder(list, "name-desc").map((x) => x.id)).toEqual(["s10", "s2", "s1"]);
+    expect(sortSectionsByOrder(list, "newest-first").map((x) => x.id)).toEqual(["s10", "s2", "s1"]);
+    // The input is left alone.
+    expect(list.map((x) => x.id)).toEqual(["s10", "s2", "s1"]);
+  });
+
+  it("sorts every level of the section tree, subsections included", () => {
+    const list = [
+      sec("work", "Work", NOW),
+      sec("home", "Home", NOW + 1),
+      sec("sub10", "Sub 10", NOW + 2, "work"),
+      sec("sub2", "Sub 2", NOW + 3, "work"),
+    ];
+    expect(sortedChildSections(list, "work", "name-asc").map((x) => x.id)).toEqual(["sub2", "sub10"]);
+    expect(
+      sortedSectionTree(list, "name-asc").map((r) => `${r.depth}:${r.section.id}`),
+    ).toEqual(["0:home", "0:work", "1:sub2", "1:sub10"]);
+  });
+
+  it("orders notes by title naturally and by age, keeping pinned notes first", () => {
+    const list = [
+      mk("n10", { kind: "note", title: "Note 10", createdAt: NOW + 30, updatedAt: NOW + 30 }),
+      mk("n2", { kind: "note", title: "note 2", createdAt: NOW + 20, updatedAt: NOW + 99 }),
+      mk("n1", { kind: "note", title: "Note 1", createdAt: NOW + 10, updatedAt: NOW + 10 }),
+      mk("pin", { kind: "note", title: "Zebra", pinned: true, createdAt: NOW, updatedAt: NOW }),
+    ];
+    expect(sortNotesByOrder(list, "title-asc").map((n) => n.id)).toEqual(["pin", "n1", "n2", "n10"]);
+    expect(sortNotesByOrder(list, "title-desc").map((n) => n.id)).toEqual(["pin", "n10", "n2", "n1"]);
+    expect(sortNotesByOrder(list, "newest-first").map((n) => n.id)).toEqual(["pin", "n10", "n2", "n1"]);
+    expect(sortNotesByOrder(list, "oldest-first").map((n) => n.id)).toEqual(["pin", "n1", "n2", "n10"]);
+    expect(sortNotesByOrder(list, "recently-edited").map((n) => n.id)).toEqual(["pin", "n2", "n10", "n1"]);
+  });
+
+  it("applies the chosen note order inside a section without disturbing reminder times", () => {
+    const list = [
+      mk("n10", { kind: "note", sectionId: "sec", title: "Note 10" }),
+      mk("n1", { kind: "note", sectionId: "sec", title: "Note 1" }),
+      mk("late", { kind: "reminder", sectionId: "sec", title: "Late", reminderAt: NOW + 2000 }),
+      mk("soon", { kind: "reminder", sectionId: "sec", title: "Soon", reminderAt: NOW + 1000 }),
+    ];
+    const folder = itemsInSection(list, "sec", "title-asc");
+    expect(folder.notes.map((n) => n.id)).toEqual(["n1", "n10"]);
+    expect(folder.reminders.map((n) => n.id)).toEqual(["soon", "late"]);
   });
 });
